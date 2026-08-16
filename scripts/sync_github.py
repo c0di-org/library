@@ -14,6 +14,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +22,9 @@ OUT = ROOT / "catalog" / "apps" / "generated"
 LIBRARY_MANIFEST = ROOT / "catalog" / "apps" / "library.json"
 API = "https://api.github.com"
 PACKAGE = re.compile(r"package: name='([^']+)' versionCode='([^']+)' versionName='([^']*)'(?:.* split='([^']+)')?")
+ICON = re.compile(r"application-icon-(\d+):'([^']+)'" )
+ICON_FALLBACK = re.compile(r"application-icon:'([^']+)'" )
+MAX_ICON_BYTES = 256 * 1024
 
 
 class GitHub:
@@ -83,6 +87,37 @@ def sha256(path: Path):
     return digest.hexdigest()
 
 
+def extract_icon(path: Path, badging: str):
+    candidates = [(int(size), resource) for size, resource in ICON.findall(badging)]
+    fallback = ICON_FALLBACK.search(badging)
+    if fallback:
+        candidates.append((0, fallback.group(1)))
+
+    mime_types = {
+        ".png": "image/png",
+        ".webp": "image/webp",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+    }
+    with zipfile.ZipFile(path) as apk:
+        for _, resource in sorted(candidates, reverse=True):
+            mime_type = mime_types.get(Path(resource).suffix.lower())
+            if not mime_type:
+                continue
+            try:
+                with apk.open(resource) as source:
+                    data = source.read(MAX_ICON_BYTES + 1)
+            except KeyError:
+                continue
+            if not data or len(data) > MAX_ICON_BYTES:
+                continue
+            return {
+                "mimeType": mime_type,
+                "dataBase64": base64.b64encode(data).decode("ascii"),
+            }
+    return None
+
+
 def inspect(path: Path, aapt2: str, apksigner: str):
     badging = subprocess.check_output([aapt2, "dump", "badging", str(path)], text=True)
     package_line = next((line for line in badging.splitlines() if line.startswith("package:")), "")
@@ -119,6 +154,7 @@ def inspect(path: Path, aapt2: str, apksigner: str):
         "targetSdk": int(target.group(1)) if target else 21,
         "abis": re.findall(r"'([^']+)'", native),
         "signer": signer_digest,
+        "icon": extract_icon(path, badging),
     }
 
 
@@ -212,6 +248,7 @@ def build(gh: GitHub, repo: dict, release: dict, history: list, meta: dict, aapt
     private = bool(repo.get("private"))
     changelog = [line.strip(" -*\t") for line in (release.get("body") or "").splitlines() if line.strip()][:8]
     changelog = changelog or [f"Release {release.get('tag_name', '')}"]
+    icon = next((item[1].get("icon") for item in inspected if item[1].get("icon")), None)
     return {
         "id": meta.get("id") or re.sub(r"[^a-z0-9._-]+", "-", repo["name"].lower()).strip("-"),
         "name": meta.get("name") or repo["name"].replace("_", " ").replace("-", " ").title(),
@@ -219,6 +256,7 @@ def build(gh: GitHub, repo: dict, release: dict, history: list, meta: dict, aapt
         "developer": meta.get("developer") or repo["owner"]["login"],
         "tagline": meta.get("tagline") or repo.get("description") or "Latest release from GitHub.",
         "description": meta.get("description") or repo.get("description") or f"Latest Android release from {repo['full_name']}.",
+        "icon": icon,
         "category": meta.get("category") or "Apps",
         "accent": meta.get("accent") or "#A9FF68",
         "featured": bool(meta.get("featured", False)),

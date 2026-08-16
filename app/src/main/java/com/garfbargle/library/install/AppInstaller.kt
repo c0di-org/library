@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -21,7 +22,11 @@ import java.security.MessageDigest
 
 sealed interface InstallState {
     data object Idle : InstallState
-    data class Downloading(val progress: Float?) : InstallState
+    data class Downloading(
+        val progress: Float?,
+        val bytesDownloaded: Long,
+        val totalBytes: Long?
+    ) : InstallState
     data object Verifying : InstallState
     data object Installing : InstallState
     data object AwaitingPermission : InstallState
@@ -41,8 +46,13 @@ class AppInstaller(
 
     fun unknownSourcesIntent(): Intent =
         Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
-            data = android.net.Uri.parse("package:${context.packageName}")
+            data = Uri.parse("package:${context.packageName}")
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+
+    fun uninstallIntent(packageName: String): Intent =
+        Intent(Intent.ACTION_DELETE, Uri.parse("package:$packageName")).apply {
+            putExtra(Intent.EXTRA_RETURN_RESULT, true)
         }
 
     suspend fun install(entry: AppEntry, onState: (InstallState) -> Unit) = withContext(Dispatchers.IO) {
@@ -58,14 +68,14 @@ class AppInstaller(
 
         val installed = deviceApps.stateFor(entry.packageName)
         if (installed.installed && !installed.signerMatches(entry)) {
-            emit(onState, InstallState.Failed("The installed app uses a different signing key. Library will not replace it."))
+            emit(onState, InstallState.Failed("The installed copy is signed differently. Remove it before installing this build."))
             return@withContext
         }
 
         try {
             val apk = File(context.cacheDir, "library-${entry.packageName}-${entry.versionCode}.apk")
-            download(artifact.apiUrl ?: artifact.downloadUrl ?: error("Release asset URL is missing."), artifact.authRequired, token, apk) {
-                emit(onState, InstallState.Downloading(it))
+            download(artifact.apiUrl ?: artifact.downloadUrl ?: error("Release asset URL is missing."), artifact.authRequired, token, apk) { progress, downloaded, total ->
+                emit(onState, InstallState.Downloading(progress, downloaded, total))
             }
             emit(onState, InstallState.Verifying)
             verify(entry, artifact.sha256, apk)
@@ -90,11 +100,12 @@ class AppInstaller(
         authRequired: Boolean,
         token: String?,
         destination: File,
-        onProgress: (Float?) -> Unit
+        onProgress: (Float?, Long, Long?) -> Unit
     ) {
         val response = GitHubHttp.openBinary(url, if (authRequired || url.startsWith("https://api.github.com/")) token else null)
         response.use {
             val total = it.contentLength
+            onProgress(total?.let { 0f }, 0L, total)
             it.stream.use { input ->
                 destination.outputStream().buffered().use { output ->
                     val buffer = ByteArray(64 * 1024)
@@ -105,7 +116,7 @@ class AppInstaller(
                         if (read == 0) continue
                         output.write(buffer, 0, read)
                         done += read
-                        onProgress(total?.let { size -> (done.toDouble() / size.toDouble()).toFloat().coerceIn(0f, 1f) })
+                        onProgress(total?.let { size -> (done.toDouble() / size.toDouble()).toFloat().coerceIn(0f, 1f) }, done, total)
                     }
                 }
             }

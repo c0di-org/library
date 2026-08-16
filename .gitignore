@@ -13,6 +13,7 @@
 /catalog/apps/generated/*.json
 *.jks.b64
 *.keystore.b64
+/infra/catalog-webhook/.wrangler/
 
 __pycache__/
 *.pyc

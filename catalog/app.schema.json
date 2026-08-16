@@ -11,6 +11,15 @@
     "developer": {"type": "string"},
     "tagline": {"type": "string"},
     "description": {"type": "string"},
+    "icon": {
+      "type": ["object", "null"],
+      "required": ["mimeType", "dataBase64"],
+      "properties": {
+        "mimeType": {"enum": ["image/png", "image/webp", "image/jpeg"]},
+        "dataBase64": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
     "category": {"type": "string"},
     "accent": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}$"},
     "featured": {"type": "boolean"},

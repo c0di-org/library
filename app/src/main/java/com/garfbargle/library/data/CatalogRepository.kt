@@ -30,6 +30,23 @@ class CatalogRepository(
             )
     }
 
+    suspend fun readmeFor(entry: AppEntry): String? = withContext(Dispatchers.IO) {
+        val repo = entry.repository ?: return@withContext null
+        val url = "https://api.github.com/repos/$repo/readme"
+        val token = tokenStore.token()
+        val authenticated = runCatching {
+            GitHubHttp.getText(url, token, accept = "application/vnd.github.raw+json")
+        }.getOrNull()
+        if (!authenticated.isNullOrBlank()) return@withContext authenticated
+
+        if (!token.isNullOrBlank() && entry.visibility == AppVisibility.PUBLIC) {
+            return@withContext runCatching {
+                GitHubHttp.getText(url, null, accept = "application/vnd.github.raw+json")
+            }.getOrNull()?.takeIf { it.isNotBlank() }
+        }
+        null
+    }
+
     private fun readBundledCatalog(): String =
         context.assets.open("catalog.json").bufferedReader().use { it.readText() }
 
@@ -92,6 +109,7 @@ class CatalogRepository(
     private fun JSONObject.toAppEntry(schemaVersion: Int): AppEntry {
         val release = optJSONObject("release") ?: JSONObject()
         val provenance = optJSONObject("provenance") ?: JSONObject()
+        val iconJson = optJSONObject("icon")
         val changelogJson = optJSONArray("changelog") ?: JSONArray()
         val historyJson = optJSONArray("history") ?: JSONArray()
         val changelog = buildList {
@@ -110,6 +128,12 @@ class CatalogRepository(
                     )
                 )
             }
+        }
+        val icon = iconJson?.optNullableString("dataBase64")?.let { data ->
+            AppIcon(
+                mimeType = iconJson.optString("mimeType", "image/png"),
+                dataBase64 = data
+            )
         }
         val trust = when (provenance.optString("kind", "binary")) {
             "developer-signed" -> TrustKind.DEVELOPER_SIGNED
@@ -159,6 +183,7 @@ class CatalogRepository(
             developer = optString("developer", "Unknown developer"),
             tagline = optString("tagline", ""),
             description = optString("description", ""),
+            icon = icon,
             versionName = release.optString("versionName", "0"),
             versionCode = release.optLong("versionCode", 0),
             category = optString("category", "Apps"),

@@ -13,6 +13,11 @@ enum class AppVisibility {
     PRIVATE
 }
 
+data class AppIcon(
+    val mimeType: String,
+    val dataBase64: String
+)
+
 data class Artifact(
     val name: String,
     val downloadUrl: String?,
@@ -41,6 +46,7 @@ data class AppEntry(
     val developer: String,
     val tagline: String,
     val description: String,
+    val icon: AppIcon?,
     val versionName: String,
     val versionCode: Long,
     val category: String,
@@ -98,6 +104,8 @@ data class InstalledState(
         val actual = signingCertSha256?.normalizeFingerprint() ?: return false
         return expected.equals(actual, ignoreCase = true)
     }
+
+    fun requiresReplacement(entry: AppEntry): Boolean = hasUpdate(entry) && !signerMatches(entry)
 }
 
 internal fun String.normalizeFingerprint(): String = replace(":", "").trim().lowercase()
