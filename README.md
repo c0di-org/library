@@ -101,7 +101,7 @@ Generate the key once, back it up offline, and never regenerate it for later ver
 Requirements:
 
 - JDK 17
-- Android SDK platform 37
+- Android SDK platform 36
 - Android build-tools 36.0.0
 - Gradle 9.5.0
 
