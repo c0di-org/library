@@ -60,7 +60,8 @@ class GitHub:
         return None
 
     def download(self, url: str, path: Path):
-        with urllib.request.urlopen(self.request(url), timeout=180) as response, path.open("wb") as output:
+        request = self.request(url, accept="application/octet-stream")
+        with urllib.request.urlopen(request, timeout=180) as response, path.open("wb") as output:
             shutil.copyfileobj(response, output, 1024 * 1024)
 
     def upload_release_asset(self, upload_url: str, name: str, path: Path, content_type: str):
