@@ -4,8 +4,14 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-val libraryVersionName = providers.gradleProperty("VERSION_NAME").orElse("1.0.0")
-val libraryVersionCode = providers.gradleProperty("VERSION_CODE").orElse("1000000").map(String::toInt)
+val libraryVersionName = providers.gradleProperty("LIBRARY_VERSION").orElse("1.0.0")
+val versionMatch = Regex("^(\\d+)\\.(\\d+)\\.(\\d+)$").matchEntire(libraryVersionName.get())
+    ?: error("LIBRARY_VERSION must be major.minor.patch")
+val (versionMajor, versionMinor, versionPatch) = versionMatch.destructured
+require(versionMinor.toInt() <= 999 && versionPatch.toInt() <= 999) {
+    "LIBRARY_VERSION minor and patch components must be <= 999"
+}
+val libraryVersionCode = versionMajor.toInt() * 1_000_000 + versionMinor.toInt() * 1_000 + versionPatch.toInt()
 val catalogUrl = providers.gradleProperty("LIBRARY_CATALOG_URL").orElse("")
 val catalogRepository = providers.gradleProperty("LIBRARY_CATALOG_REPOSITORY").orElse("garfbargle/library")
 
@@ -23,7 +29,7 @@ android {
         applicationId = "com.garfbargle.library"
         minSdk = 28
         targetSdk = 36
-        versionCode = libraryVersionCode.get()
+        versionCode = libraryVersionCode
         versionName = libraryVersionName.get()
         buildConfigField("String", "CATALOG_URL", "\"${catalogUrl.get()}\"")
         buildConfigField("String", "CATALOG_REPOSITORY", "\"${catalogRepository.get()}\"")
