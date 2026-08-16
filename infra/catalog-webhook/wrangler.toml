@@ -1,0 +1,11 @@
+name = "library-catalog-webhook"
+main = "worker.mjs"
+compatibility_date = "2026-08-16"
+workers_dev = true
+
+[vars]
+SOURCE_OWNER = "garfbargle"
+LIBRARY_OWNER = "garfbargle"
+LIBRARY_REPO = "library"
+LIBRARY_WORKFLOW = "catalog.yml"
+LIBRARY_REF = "main"
