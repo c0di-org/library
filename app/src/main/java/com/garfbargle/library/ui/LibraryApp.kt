@@ -2,9 +2,12 @@ package com.garfbargle.library.ui
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.net.Uri
+import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -21,13 +24,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.LibraryBooks
 import androidx.compose.material.icons.filled.Lock
@@ -38,6 +42,7 @@ import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Source
 import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -48,10 +53,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -65,7 +72,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
@@ -107,15 +117,12 @@ fun LibraryApp() {
     var refreshing by remember { mutableStateOf(false) }
     var tab by remember { mutableStateOf(Tab.DISCOVER) }
     var selected by remember { mutableStateOf<AppEntry?>(null) }
-    var pending by remember { mutableStateOf<AppEntry?>(null) }
+    var pendingPermission by remember { mutableStateOf<AppEntry?>(null) }
+    var replacement by remember { mutableStateOf<AppEntry?>(null) }
+    var installAfterRemoval by remember { mutableStateOf<AppEntry?>(null) }
     var hasToken by remember { mutableStateOf(tokenStore.hasToken()) }
     val installed = remember { mutableStateMapOf<String, InstalledState>() }
     val installStates = remember { mutableStateMapOf<String, InstallState>() }
-
-    fun refreshInstalled() {
-        installed.clear()
-        load?.catalog?.apps.orEmpty().forEach { installed[it.packageName] = deviceApps.stateFor(it.packageName) }
-    }
 
     fun beginInstall(app: AppEntry) {
         scope.launch {
@@ -124,11 +131,23 @@ fun LibraryApp() {
     }
 
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-        pending?.let { app ->
+        pendingPermission?.let { app ->
             if (installer.canRequestPackageInstalls()) beginInstall(app)
             else installStates[app.packageName] = InstallState.Failed("Allow Library to install apps, then try again.")
         }
-        pending = null
+        pendingPermission = null
+    }
+
+    val uninstallLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        replacement?.let { app ->
+            val current = deviceApps.stateFor(app.packageName)
+            installed[app.packageName] = current
+            if (!current.installed) {
+                installStates[app.packageName] = InstallState.Idle
+                installAfterRemoval = app
+            }
+        }
+        replacement = null
     }
 
     fun requestInstall(app: AppEntry) {
@@ -137,10 +156,26 @@ fun LibraryApp() {
             tab = Tab.SETTINGS
             return
         }
-        if (installer.canRequestPackageInstalls()) beginInstall(app) else {
-            pending = app
+        val current = installed[app.packageName] ?: deviceApps.stateFor(app.packageName).also {
+            installed[app.packageName] = it
+        }
+        if (current.requiresReplacement(app)) {
+            replacement = app
+            return
+        }
+        if (installer.canRequestPackageInstalls()) {
+            beginInstall(app)
+        } else {
+            pendingPermission = app
             installStates[app.packageName] = InstallState.AwaitingPermission
             permissionLauncher.launch(installer.unknownSourcesIntent())
+        }
+    }
+
+    LaunchedEffect(installAfterRemoval?.id) {
+        installAfterRemoval?.let { app ->
+            installAfterRemoval = null
+            requestInstall(app)
         }
     }
 
@@ -179,7 +214,8 @@ fun LibraryApp() {
                 onInstall = { requestInstall(app) },
                 onOpen = { openApp(context, app.packageName) },
                 onSource = { app.sourceUrl?.let { openUrl(context, it) } },
-                onRelease = { app.releaseUrl?.let { openUrl(context, it) } }
+                onRelease = { app.releaseUrl?.let { openUrl(context, it) } },
+                loadReadme = { repository.readmeFor(app) }
             )
         } ?: MainShell(
             load = load,
@@ -191,6 +227,7 @@ fun LibraryApp() {
             hasToken = hasToken,
             onTab = { tab = it },
             onOpen = { selected = it },
+            onLaunch = { openApp(context, it.packageName) },
             onRefresh = { refreshKey++ },
             onInstall = ::requestInstall,
             onSaveToken = {
@@ -202,6 +239,24 @@ fun LibraryApp() {
                 tokenStore.clear()
                 hasToken = false
                 refreshKey++
+            }
+        )
+    }
+
+    replacement?.let { app ->
+        AlertDialog(
+            onDismissRequest = { replacement = null },
+            title = { Text("Replace ${app.name}?") },
+            text = {
+                Text(
+                    "The installed copy uses a different signing key, so Android cannot update it in place. Remove the current app first, then Library will continue with this build. Removing an app may also remove its local data."
+                )
+            },
+            dismissButton = { TextButton(onClick = { replacement = null }) { Text("Cancel") } },
+            confirmButton = {
+                TextButton(onClick = { uninstallLauncher.launch(installer.uninstallIntent(app.packageName)) }) {
+                    Text("Remove current app")
+                }
             }
         )
     }
@@ -218,6 +273,7 @@ private fun MainShell(
     hasToken: Boolean,
     onTab: (Tab) -> Unit,
     onOpen: (AppEntry) -> Unit,
+    onLaunch: (AppEntry) -> Unit,
     onRefresh: () -> Unit,
     onInstall: (AppEntry) -> Unit,
     onSaveToken: (String) -> Unit,
@@ -254,9 +310,9 @@ private fun MainShell(
         }
         val catalog = load.catalog
         when (tab) {
-            Tab.DISCOVER -> DiscoverScreen(catalog.apps, load.warning, refreshing, onOpen, onRefresh, onInstall, installed, installStates)
-            Tab.LIBRARY -> AppListScreen("Your library", "Installed from Library or already on this device.", catalog.apps.filter { installed[it.packageName]?.installed == true }, onOpen, onInstall, installed, installStates, padding)
-            Tab.UPDATES -> AppListScreen("Updates", "Newer signed builds ready for your device.", catalog.apps.filter { installed[it.packageName]?.hasUpdate(it) == true }, onOpen, onInstall, installed, installStates, padding)
+            Tab.DISCOVER -> DiscoverScreen(catalog.apps, load.warning, refreshing, onOpen, onLaunch, onRefresh, onInstall, installed, installStates)
+            Tab.LIBRARY -> AppListScreen("Your library", "Installed and ready to open.", catalog.apps.filter { installed[it.packageName]?.installed == true }, onOpen, onLaunch, onInstall, installed, installStates, padding)
+            Tab.UPDATES -> AppListScreen("Updates", "New builds ready for this device.", catalog.apps.filter { installed[it.packageName]?.hasUpdate(it) == true }, onOpen, onLaunch, onInstall, installed, installStates, padding)
             Tab.SETTINGS -> SettingsScreen(hasToken, load.warning, onSaveToken, onClearToken, onRefresh, padding)
         }
     }
@@ -269,7 +325,13 @@ private fun RowScope.NavItem(tab: Tab, current: Tab, label: String, icon: androi
         onClick = { onTab(tab) },
         icon = { Icon(icon, null) },
         label = { Text(label, fontSize = 10.sp) },
-        colors = NavigationBarItemDefaults.colors(selectedIconColor = Ink, indicatorColor = Acid, unselectedIconColor = TextSecondary, selectedTextColor = TextPrimary, unselectedTextColor = TextSecondary)
+        colors = NavigationBarItemDefaults.colors(
+            selectedIconColor = Ink,
+            indicatorColor = Acid,
+            unselectedIconColor = TextSecondary,
+            selectedTextColor = TextPrimary,
+            unselectedTextColor = TextSecondary
+        )
     )
 }
 
@@ -279,21 +341,31 @@ private fun DiscoverScreen(
     warning: String?,
     refreshing: Boolean,
     onOpen: (AppEntry) -> Unit,
+    onLaunch: (AppEntry) -> Unit,
     onRefresh: () -> Unit,
     onInstall: (AppEntry) -> Unit,
     installed: Map<String, InstalledState>,
     installStates: Map<String, InstallState>
 ) {
     var query by remember { mutableStateOf("") }
-    val visible = apps.filter { query.isBlank() || it.name.contains(query, true) || it.tagline.contains(query, true) || it.category.contains(query, true) }
-    LazyColumn(contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 56.dp, bottom = 120.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+    val visible = apps.filter {
+        query.isBlank() || it.name.contains(query, true) || it.tagline.contains(query, true) ||
+            it.category.contains(query, true) || it.developer.contains(query, true)
+    }
+    LazyColumn(
+        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 54.dp, bottom = 120.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("LIBRARY", color = Acid, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp)
-                    Text("Apps, without the mall.", color = TextPrimary, fontSize = 30.sp, fontWeight = FontWeight.Bold)
+                    Text("LIBRARY", color = Acid, fontSize = 10.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp)
+                    Text("Apps, directly.", color = TextPrimary, fontSize = 30.sp, fontWeight = FontWeight.Bold)
                 }
-                IconButton(onClick = onRefresh) { if (refreshing) CircularProgressIndicator(Modifier.size(20.dp), color = Acid, strokeWidth = 2.dp) else Icon(Icons.Default.Refresh, null, tint = TextSecondary) }
+                IconButton(onClick = onRefresh) {
+                    if (refreshing) CircularProgressIndicator(Modifier.size(20.dp), color = Acid, strokeWidth = 2.dp)
+                    else Icon(Icons.Default.Refresh, "Refresh", tint = TextSecondary)
+                }
             }
         }
         item {
@@ -304,12 +376,28 @@ private fun DiscoverScreen(
                 shape = RoundedCornerShape(18.dp),
                 singleLine = true,
                 leadingIcon = { Icon(Icons.Default.Search, null) },
-                placeholder = { Text("Search apps") }
+                placeholder = { Text("Search") }
             )
         }
         warning?.let { item { Notice(it) } }
-        if (visible.isEmpty()) item { EmptyCard(if (apps.isEmpty()) "No APK releases yet" else "No match", if (apps.isEmpty()) "Publish a stable GitHub Release with a standalone APK and it will appear here on the next catalog refresh." else "Try another search.") }
-        items(visible, key = { it.id }) { app -> AppCard(app, installed[app.packageName] ?: InstalledState(false), installStates[app.packageName] ?: InstallState.Idle, onOpen, onInstall) }
+        if (visible.isEmpty()) {
+            item {
+                EmptyCard(
+                    if (apps.isEmpty()) "No apps yet" else "No match",
+                    if (apps.isEmpty()) "Publish a stable GitHub Release with a standalone APK and it will appear after the next catalog refresh." else "Try another search."
+                )
+            }
+        }
+        items(visible, key = { it.id }) { app ->
+            AppCard(
+                app,
+                installed[app.packageName] ?: InstalledState(false),
+                installStates[app.packageName] ?: InstallState.Idle,
+                onOpen,
+                onLaunch,
+                onInstall
+            )
+        }
     }
 }
 
@@ -319,146 +407,626 @@ private fun AppListScreen(
     subtitle: String,
     apps: List<AppEntry>,
     onOpen: (AppEntry) -> Unit,
+    onLaunch: (AppEntry) -> Unit,
     onInstall: (AppEntry) -> Unit,
     installed: Map<String, InstalledState>,
     installStates: Map<String, InstallState>,
     padding: PaddingValues
 ) {
-    LazyColumn(modifier = Modifier.padding(padding), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        item { Spacer(Modifier.height(8.dp)); Text(title, color = TextPrimary, fontSize = 30.sp, fontWeight = FontWeight.Bold); Text(subtitle, color = TextSecondary, fontSize = 13.sp) }
-        if (apps.isEmpty()) item { EmptyCard("All clear", if (title == "Updates") "Everything is current." else "Installed apps from the catalog will collect here.") }
-        items(apps, key = { it.id }) { app -> AppCard(app, installed[app.packageName] ?: InstalledState(false), installStates[app.packageName] ?: InstallState.Idle, onOpen, onInstall) }
+    LazyColumn(
+        modifier = Modifier.padding(padding),
+        contentPadding = PaddingValues(20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item {
+            Spacer(Modifier.height(8.dp))
+            Text(title, color = TextPrimary, fontSize = 30.sp, fontWeight = FontWeight.Bold)
+            Text(subtitle, color = TextSecondary, fontSize = 13.sp)
+        }
+        if (apps.isEmpty()) {
+            item { EmptyCard("All clear", if (title == "Updates") "Everything is current." else "Installed catalog apps will collect here.") }
+        }
+        items(apps, key = { it.id }) { app ->
+            AppCard(
+                app,
+                installed[app.packageName] ?: InstalledState(false),
+                installStates[app.packageName] ?: InstallState.Idle,
+                onOpen,
+                onLaunch,
+                onInstall
+            )
+        }
     }
 }
 
 @Composable
-private fun AppCard(app: AppEntry, installed: InstalledState, state: InstallState, onOpen: (AppEntry) -> Unit, onInstall: (AppEntry) -> Unit) {
+private fun AppCard(
+    app: AppEntry,
+    installed: InstalledState,
+    state: InstallState,
+    onOpen: (AppEntry) -> Unit,
+    onLaunch: (AppEntry) -> Unit,
+    onInstall: (AppEntry) -> Unit
+) {
     Row(
-        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(SurfaceRaised).clickable { onOpen(app) }.padding(16.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(22.dp))
+            .background(SurfaceRaised)
+            .clickable { onOpen(app) }
+            .padding(14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(Modifier.size(58.dp).clip(RoundedCornerShape(17.dp)).background(Color(app.accent)), contentAlignment = Alignment.Center) {
-            Text(app.name.take(1).uppercase(), color = Ink, fontSize = 24.sp, fontWeight = FontWeight.Black)
-        }
+        AppIcon(app, 58)
         Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(app.name, color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (app.requiresGitHubAuth) { Spacer(Modifier.width(6.dp)); Icon(Icons.Default.Lock, null, tint = TextSecondary, modifier = Modifier.size(13.dp)) }
+                if (app.requiresGitHubAuth) {
+                    Spacer(Modifier.width(6.dp))
+                    Icon(Icons.Default.Lock, null, tint = TextSecondary, modifier = Modifier.size(13.dp))
+                }
             }
-            Text(app.tagline, color = TextSecondary, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Text("${trustLabel(app.trust)} · v${app.versionName}", color = Color(0xFF73757D), fontSize = 10.sp)
+            Text(app.tagline, color = TextSecondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            val replacementRequired = installed.requiresReplacement(app)
+            val status = when {
+                replacementRequired -> "Different signer · replace required"
+                installed.hasUpdate(app) -> "${installed.versionName ?: "Installed"} → ${app.versionName}"
+                installed.installed -> "Installed · ${installed.versionName ?: app.versionName}"
+                else -> "${trustLabel(app.trust)} · ${app.versionName}"
+            }
+            Text(
+                status,
+                color = if (replacementRequired) Color(0xFFFFB86B) else Color(0xFF73757D),
+                fontSize = 10.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
         Spacer(Modifier.width(10.dp))
-        InstallButton(app, installed, state, onInstall)
+        InstallButton(app, installed, state, onLaunch, onInstall)
     }
 }
 
 @Composable
-private fun InstallButton(app: AppEntry, installed: InstalledState, state: InstallState, onInstall: (AppEntry) -> Unit) {
-    val busy = state is InstallState.Downloading || state is InstallState.Verifying || state is InstallState.Installing || state is InstallState.AwaitingPermission
-    val label = when {
-        busy -> "…"
-        installed.hasUpdate(app) -> "UPDATE"
-        installed.installed -> "OPEN"
-        else -> "GET"
+private fun InstallButton(
+    app: AppEntry,
+    installed: InstalledState,
+    state: InstallState,
+    onLaunch: (AppEntry) -> Unit,
+    onInstall: (AppEntry) -> Unit
+) {
+    val busy = state.isBusy()
+    val label = when (state) {
+        is InstallState.Downloading -> state.progress?.let { "${(it * 100).toInt()}%" } ?: "DOWN"
+        InstallState.Verifying -> "CHECK"
+        InstallState.Installing -> "INSTALL"
+        InstallState.AwaitingPermission -> "ALLOW"
+        else -> when {
+            installed.requiresReplacement(app) -> "REPLACE"
+            installed.hasUpdate(app) -> "UPDATE"
+            installed.installed -> "OPEN"
+            else -> "GET"
+        }
     }
+    val passive = installed.installed && !installed.hasUpdate(app)
     Button(
-        onClick = { if (!installed.installed || installed.hasUpdate(app)) onInstall(app) },
-        enabled = !busy && (!installed.installed || installed.hasUpdate(app)),
+        onClick = {
+            when {
+                installed.installed && !installed.hasUpdate(app) -> onLaunch(app)
+                else -> onInstall(app)
+            }
+        },
+        enabled = !busy,
         shape = CircleShape,
         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
-        colors = ButtonDefaults.buttonColors(containerColor = if (installed.installed && !installed.hasUpdate(app)) Color(0xFF26282C) else Acid, contentColor = if (installed.installed && !installed.hasUpdate(app)) TextSecondary else Ink)
-    ) { Text(label, fontSize = 10.sp, fontWeight = FontWeight.Black) }
+        colors = ButtonDefaults.buttonColors(
+            containerColor = if (passive) Color(0xFF26282C) else Acid,
+            contentColor = if (passive) TextPrimary else Ink
+        )
+    ) {
+        if (busy) {
+            CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp)
+            Spacer(Modifier.width(6.dp))
+        }
+        Text(label, fontSize = 10.sp, fontWeight = FontWeight.Black)
+    }
 }
 
 @Composable
-private fun AppDetail(app: AppEntry, installed: InstalledState, state: InstallState, onBack: () -> Unit, onInstall: () -> Unit, onOpen: () -> Unit, onSource: () -> Unit, onRelease: () -> Unit) {
-    LazyColumn(contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 46.dp, bottom = 60.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
-        item { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, null, tint = TextPrimary) } }
+private fun AppDetail(
+    app: AppEntry,
+    installed: InstalledState,
+    state: InstallState,
+    onBack: () -> Unit,
+    onInstall: () -> Unit,
+    onOpen: () -> Unit,
+    onSource: () -> Unit,
+    onRelease: () -> Unit,
+    loadReadme: suspend () -> String?
+) {
+    var readme by remember(app.id) { mutableStateOf<String?>(null) }
+    var readmeLoaded by remember(app.id) { mutableStateOf(false) }
+
+    LaunchedEffect(app.id) {
+        readmeLoaded = false
+        readme = runCatching { loadReadme() }.getOrNull()
+        readmeLoaded = true
+    }
+
+    LazyColumn(
+        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 42.dp, bottom = 70.dp),
+        verticalArrangement = Arrangement.spacedBy(18.dp)
+    ) {
+        item { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back", tint = TextPrimary) } }
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(86.dp).clip(RoundedCornerShape(24.dp)).background(Color(app.accent)), contentAlignment = Alignment.Center) { Text(app.name.take(1).uppercase(), color = Ink, fontSize = 38.sp, fontWeight = FontWeight.Black) }
+                AppIcon(app, 84)
                 Spacer(Modifier.width(16.dp))
-                Column(Modifier.weight(1f)) { Text(app.name, color = TextPrimary, fontSize = 28.sp, fontWeight = FontWeight.Bold); Text(app.tagline, color = TextSecondary, fontSize = 13.sp) }
+                Column(Modifier.weight(1f)) {
+                    Text(app.name, color = TextPrimary, fontSize = 28.sp, fontWeight = FontWeight.Bold, maxLines = 2)
+                    Text(app.tagline, color = TextSecondary, fontSize = 13.sp)
+                }
             }
         }
         item {
-            Button(onClick = if (installed.installed && !installed.hasUpdate(app)) onOpen else onInstall, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(18.dp), colors = ButtonDefaults.buttonColors(containerColor = Acid, contentColor = Ink)) {
-                Text(when { state is InstallState.Downloading -> "Downloading…"; state is InstallState.Verifying -> "Verifying…"; state is InstallState.Installing -> "Installing…"; installed.hasUpdate(app) -> "Update to ${app.versionName}"; installed.installed -> "Open"; else -> "Install" }, fontWeight = FontWeight.Bold)
+            val busy = state.isBusy()
+            Button(
+                onClick = if (installed.installed && !installed.hasUpdate(app)) onOpen else onInstall,
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth().height(52.dp),
+                shape = RoundedCornerShape(18.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Acid, contentColor = Ink)
+            ) {
+                Text(
+                    when {
+                        state is InstallState.Downloading -> state.progress?.let { "Downloading · ${(it * 100).toInt()}%" } ?: "Downloading"
+                        state is InstallState.Verifying -> "Verifying download"
+                        state is InstallState.Installing -> "Installing"
+                        state is InstallState.AwaitingPermission -> "Waiting for permission"
+                        installed.requiresReplacement(app) -> "Replace installed copy"
+                        installed.hasUpdate(app) -> "Update to ${app.versionName}"
+                        installed.installed -> "Open"
+                        else -> "Install"
+                    },
+                    fontWeight = FontWeight.Bold
+                )
             }
-            if (state is InstallState.Failed) { Spacer(Modifier.height(8.dp)); Text(state.message, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
+            when (state) {
+                is InstallState.Downloading -> {
+                    Spacer(Modifier.height(10.dp))
+                    DownloadProgress(state)
+                }
+                is InstallState.Failed -> {
+                    Spacer(Modifier.height(8.dp))
+                    Text(state.message, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                }
+                else -> Unit
+            }
         }
         item { Metadata(app) }
-        item { Text(app.description, color = TextSecondary, fontSize = 15.sp, lineHeight = 22.sp) }
-        item { Provenance(app, installed) }
-        if (app.changelog.isNotEmpty()) item { SectionCard("What's new") { app.changelog.take(6).forEach { Text("• $it", color = TextSecondary, fontSize = 13.sp, modifier = Modifier.padding(vertical = 3.dp)) } } }
-        if (app.sourceUrl != null) item { LinkCard(Icons.Default.Source, "View source", app.repository.orEmpty(), onSource) }
-        if (app.releaseUrl != null) item { LinkCard(Icons.Default.OpenInNew, "GitHub release", app.releaseTag.orEmpty(), onRelease) }
-        item { Text("${app.packageName}\nby ${app.developer}", color = Color(0xFF62646B), fontSize = 10.sp) }
+        if (app.sourceUrl != null || app.releaseUrl != null) {
+            item {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (app.sourceUrl != null) {
+                        OutlinedButton(onClick = onSource, modifier = Modifier.weight(1f), shape = RoundedCornerShape(16.dp)) {
+                            Icon(Icons.Default.Source, null, modifier = Modifier.size(17.dp))
+                            Spacer(Modifier.width(7.dp))
+                            Text("Source")
+                        }
+                    }
+                    if (app.releaseUrl != null) {
+                        OutlinedButton(onClick = onRelease, modifier = Modifier.weight(1f), shape = RoundedCornerShape(16.dp)) {
+                            Icon(Icons.Default.OpenInNew, null, modifier = Modifier.size(17.dp))
+                            Spacer(Modifier.width(7.dp))
+                            Text("Release")
+                        }
+                    }
+                }
+            }
+        }
+        item {
+            Text("README", color = Color(0xFF6A6C73), fontSize = 10.sp, fontWeight = FontWeight.Black, letterSpacing = 1.5.sp)
+            Spacer(Modifier.height(12.dp))
+            when {
+                !readmeLoaded -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(16.dp), color = TextSecondary, strokeWidth = 1.5.dp)
+                    Spacer(Modifier.width(10.dp))
+                    Text("Loading from ${app.repository ?: "repository"}…", color = TextSecondary, fontSize = 12.sp)
+                }
+                !readme.isNullOrBlank() -> ReadmeContent(readme.orEmpty())
+                else -> Text(app.description, color = TextSecondary, fontSize = 15.sp, lineHeight = 22.sp)
+            }
+        }
+        item { SecurityDisclosure(app, installed) }
+        if (app.changelog.isNotEmpty()) item { ReleaseNotesDisclosure(app) }
+        item {
+            Text(app.packageName, color = Color(0xFF62646B), fontSize = 10.sp)
+            Text("by ${app.developer}", color = Color(0xFF62646B), fontSize = 10.sp)
+        }
     }
+}
+
+@Composable
+private fun AppIcon(app: AppEntry, size: Int) {
+    val image = remember(app.icon?.dataBase64) {
+        app.icon?.dataBase64?.let { encoded ->
+            runCatching {
+                val bytes = Base64.decode(encoded, Base64.DEFAULT)
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+            }.getOrNull()
+        }
+    }
+    Box(
+        Modifier.size(size.dp).clip(RoundedCornerShape((size * 0.28f).dp)).background(Color(app.accent)),
+        contentAlignment = Alignment.Center
+    ) {
+        if (image != null) {
+            Image(image, app.name, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        } else {
+            Text(
+                app.name.take(1).uppercase(),
+                color = Ink,
+                fontSize = (size * 0.42f).sp,
+                fontWeight = FontWeight.Black
+            )
+        }
+    }
+}
+
+@Composable
+private fun DownloadProgress(state: InstallState.Downloading) {
+    Box(
+        Modifier.fillMaxWidth().height(4.dp).clip(CircleShape).background(Color(0xFF25272B))
+    ) {
+        state.progress?.let { progress ->
+            Box(Modifier.fillMaxWidth(progress.coerceIn(0f, 1f)).height(4.dp).background(Acid))
+        }
+    }
+    Spacer(Modifier.height(7.dp))
+    val amount = if (state.totalBytes != null) {
+        "${formatBytes(state.bytesDownloaded)} of ${formatBytes(state.totalBytes)}"
+    } else {
+        formatBytes(state.bytesDownloaded)
+    }
+    Text("$amount · downloading", color = TextSecondary, fontSize = 11.sp)
 }
 
 @Composable
 private fun Metadata(app: AppEntry) {
-    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Color(0xFF111214)).padding(16.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-        Metric("VERSION", app.versionName); Metric("ANDROID", "${app.minSdk}+"); Metric("SIZE", formatBytes(app.sizeBytes))
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Color(0xFF111214)).padding(16.dp),
+        horizontalArrangement = Arrangement.SpaceEvenly
+    ) {
+        Metric("VERSION", app.versionName)
+        Metric("ANDROID", "${app.minSdk}+")
+        Metric("SIZE", formatBytes(app.sizeBytes))
     }
 }
 
 @Composable
-private fun Metric(label: String, value: String) { Column(horizontalAlignment = Alignment.CenterHorizontally) { Text(label, color = Color(0xFF6A6C73), fontSize = 9.sp, fontWeight = FontWeight.Bold); Text(value, color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold) } }
-
-@Composable
-private fun Provenance(app: AppEntry, installed: InstalledState) {
-    SectionCard("Provenance") {
-        Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Security, null, tint = Acid, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text(trustLabel(app.trust), color = TextPrimary, fontWeight = FontWeight.SemiBold) }
-        Spacer(Modifier.height(8.dp))
-        Text("Library verifies the exact APK hash, package identity, version code, and signing certificate before installation.", color = TextSecondary, fontSize = 13.sp)
-        app.signingCertSha256?.let { Spacer(Modifier.height(10.dp)); Text("SIGNER  ${shortHash(it)}", color = Color(0xFF85878E), fontSize = 10.sp) }
-        app.preferredArtifact()?.sha256?.takeIf { it.isNotBlank() }?.let { Text("APK       ${shortHash(it)}", color = Color(0xFF85878E), fontSize = 10.sp) }
-        if (installed.installed && !installed.signerMatches(app)) { Spacer(Modifier.height(10.dp)); Text("Installed signer mismatch — update blocked.", color = MaterialTheme.colorScheme.error, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+private fun Metric(label: String, value: String) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(label, color = Color(0xFF6A6C73), fontSize = 9.sp, fontWeight = FontWeight.Bold)
+        Text(value, color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
     }
 }
 
 @Composable
-private fun SectionCard(title: String, content: @Composable () -> Unit) { Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp)).background(Color(0xFF131517)).padding(18.dp)) { Text(title, color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold); Spacer(Modifier.height(12.dp)); content() } }
+private fun SecurityDisclosure(app: AppEntry, installed: InstalledState) {
+    DisclosureCard(
+        title = "Security & provenance",
+        subtitle = trustLabel(app.trust),
+        icon = Icons.Default.Security
+    ) {
+        Text("Library verifies the APK hash, package identity, version code, and signing certificate before installation.", color = TextSecondary, fontSize = 13.sp)
+        app.signingCertSha256?.let {
+            Spacer(Modifier.height(10.dp))
+            Text("SIGNER  ${shortHash(it)}", color = Color(0xFF85878E), fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+        }
+        app.preferredArtifact()?.sha256?.takeIf { it.isNotBlank() }?.let {
+            Text("APK       ${shortHash(it)}", color = Color(0xFF85878E), fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+        }
+        if (installed.requiresReplacement(app)) {
+            Spacer(Modifier.height(10.dp))
+            Text("The installed copy has a different signer and must be removed before this update can be installed.", color = Color(0xFFFFB86B), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        }
+    }
+}
 
 @Composable
-private fun LinkCard(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, subtitle: String, onClick: () -> Unit) { Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Color(0xFF141517)).clickable(onClick = onClick).padding(16.dp), verticalAlignment = Alignment.CenterVertically) { Icon(icon, null, tint = TextSecondary); Spacer(Modifier.width(12.dp)); Column(Modifier.weight(1f)) { Text(title, color = TextPrimary, fontWeight = FontWeight.Medium); Text(subtitle, color = TextSecondary, fontSize = 11.sp) }; Icon(Icons.Default.OpenInNew, null, tint = TextSecondary, modifier = Modifier.size(16.dp)) } }
+private fun ReleaseNotesDisclosure(app: AppEntry) {
+    DisclosureCard(
+        title = "Release notes",
+        subtitle = app.releaseTag ?: app.versionName,
+        icon = Icons.Default.SystemUpdate
+    ) {
+        app.changelog.take(8).forEach { note ->
+            Row(Modifier.padding(vertical = 3.dp)) {
+                Text("•", color = Acid, modifier = Modifier.width(16.dp))
+                Text(note, color = TextSecondary, fontSize = 13.sp, lineHeight = 19.sp)
+            }
+        }
+    }
+}
 
 @Composable
-private fun SettingsScreen(hasToken: Boolean, warning: String?, onSave: (String) -> Unit, onClear: () -> Unit, onRefresh: () -> Unit, padding: PaddingValues) {
+private fun DisclosureCard(
+    title: String,
+    subtitle: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    content: @Composable () -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Color(0xFF121315))
+    ) {
+        Row(
+            Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(icon, null, tint = TextSecondary, modifier = Modifier.size(19.dp))
+            Spacer(Modifier.width(11.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                Text(subtitle, color = TextSecondary, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, tint = TextSecondary)
+        }
+        if (expanded) {
+            HorizontalDivider(color = Color(0xFF23252A))
+            Column(Modifier.padding(16.dp)) { content() }
+        }
+    }
+}
+
+private enum class ReadmeKind { HEADING, PARAGRAPH, BULLET, QUOTE, CODE, DIVIDER }
+private data class ReadmeBlock(val kind: ReadmeKind, val text: String, val level: Int = 0)
+
+private fun parseReadme(markdown: String): List<ReadmeBlock> {
+    val blocks = mutableListOf<ReadmeBlock>()
+    val paragraph = mutableListOf<String>()
+    val code = mutableListOf<String>()
+    var inCode = false
+
+    fun flushParagraph() {
+        if (paragraph.isNotEmpty()) {
+            cleanInlineMarkdown(paragraph.joinToString(" ")).takeIf { it.isNotBlank() }?.let {
+                blocks += ReadmeBlock(ReadmeKind.PARAGRAPH, it)
+            }
+            paragraph.clear()
+        }
+    }
+
+    fun flushCode() {
+        if (code.isNotEmpty()) {
+            blocks += ReadmeBlock(ReadmeKind.CODE, code.joinToString("\n").trimEnd())
+            code.clear()
+        }
+    }
+
+    markdown.lines().forEach { raw ->
+        val line = raw.trimEnd()
+        if (line.trimStart().startsWith("```")) {
+            flushParagraph()
+            if (inCode) flushCode()
+            inCode = !inCode
+            return@forEach
+        }
+        if (inCode) {
+            code += raw
+            return@forEach
+        }
+        val trimmed = line.trim()
+        if (trimmed.isBlank()) {
+            flushParagraph()
+            return@forEach
+        }
+        if (trimmed.startsWith("<") && trimmed.endsWith(">") && !trimmed.contains("</")) {
+            flushParagraph()
+            return@forEach
+        }
+        val heading = Regex("^(#{1,6})\\s+(.+)$").find(trimmed)
+        if (heading != null) {
+            flushParagraph()
+            blocks += ReadmeBlock(ReadmeKind.HEADING, cleanInlineMarkdown(heading.groupValues[2]), heading.groupValues[1].length)
+            return@forEach
+        }
+        if (Regex("^[-*_]{3,}$").matches(trimmed)) {
+            flushParagraph()
+            blocks += ReadmeBlock(ReadmeKind.DIVIDER, "")
+            return@forEach
+        }
+        val bullet = Regex("^(?:[-*+] |\\d+[.)] )(.+)$").find(trimmed)
+        if (bullet != null) {
+            flushParagraph()
+            blocks += ReadmeBlock(ReadmeKind.BULLET, cleanInlineMarkdown(bullet.groupValues[1]))
+            return@forEach
+        }
+        if (trimmed.startsWith(">")) {
+            flushParagraph()
+            blocks += ReadmeBlock(ReadmeKind.QUOTE, cleanInlineMarkdown(trimmed.removePrefix(">").trim()))
+            return@forEach
+        }
+        paragraph += trimmed
+    }
+    flushParagraph()
+    flushCode()
+    return blocks
+}
+
+private fun cleanInlineMarkdown(value: String): String = value
+    .replace(Regex("!\\[([^]]*)]\\([^)]+\\)"), "$1")
+    .replace(Regex("\\[([^]]+)]\\([^)]+\\)"), "$1")
+    .replace(Regex("<[^>]+>"), "")
+    .replace("**", "")
+    .replace("__", "")
+    .replace("~~", "")
+    .replace("`", "")
+    .trim()
+
+@Composable
+private fun ReadmeContent(markdown: String) {
+    val blocks = remember(markdown) { parseReadme(markdown) }
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        blocks.forEach { block ->
+            when (block.kind) {
+                ReadmeKind.HEADING -> Text(
+                    block.text,
+                    color = TextPrimary,
+                    fontSize = when (block.level) { 1 -> 24.sp; 2 -> 20.sp; 3 -> 17.sp; else -> 15.sp },
+                    fontWeight = FontWeight.Bold,
+                    lineHeight = when (block.level) { 1 -> 30.sp; 2 -> 26.sp; else -> 22.sp },
+                    modifier = Modifier.padding(top = if (block.level <= 2) 6.dp else 2.dp)
+                )
+                ReadmeKind.PARAGRAPH -> Text(block.text, color = TextSecondary, fontSize = 14.sp, lineHeight = 21.sp)
+                ReadmeKind.BULLET -> Row {
+                    Text("•", color = Acid, modifier = Modifier.width(18.dp))
+                    Text(block.text, color = TextSecondary, fontSize = 14.sp, lineHeight = 21.sp)
+                }
+                ReadmeKind.QUOTE -> Text(
+                    block.text,
+                    color = Color(0xFF9A9DA6),
+                    fontSize = 13.sp,
+                    lineHeight = 20.sp,
+                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(Color(0xFF111315)).padding(12.dp)
+                )
+                ReadmeKind.CODE -> Text(
+                    block.text,
+                    color = Color(0xFFC7CAD2),
+                    fontSize = 11.sp,
+                    lineHeight = 17.sp,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Color(0xFF0E0F11)).padding(13.dp)
+                )
+                ReadmeKind.DIVIDER -> HorizontalDivider(color = Color(0xFF24262B))
+            }
+        }
+    }
+}
+
+@Composable
+private fun SectionCard(title: String, content: @Composable () -> Unit) {
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp)).background(Color(0xFF131517)).padding(18.dp)) {
+        Text(title, color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(12.dp))
+        content()
+    }
+}
+
+@Composable
+private fun SettingsScreen(
+    hasToken: Boolean,
+    warning: String?,
+    onSave: (String) -> Unit,
+    onClear: () -> Unit,
+    onRefresh: () -> Unit,
+    padding: PaddingValues
+) {
     var token by remember { mutableStateOf("") }
-    LazyColumn(modifier = Modifier.padding(padding), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        item { Spacer(Modifier.height(8.dp)); Text("Settings", color = TextPrimary, fontSize = 30.sp, fontWeight = FontWeight.Bold); Text("Private access stays on this device.", color = TextSecondary) }
+    LazyColumn(
+        modifier = Modifier.padding(padding),
+        contentPadding = PaddingValues(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        item {
+            Spacer(Modifier.height(8.dp))
+            Text("Settings", color = TextPrimary, fontSize = 30.sp, fontWeight = FontWeight.Bold)
+            Text("Private access stays on this device.", color = TextSecondary)
+        }
         item {
             SectionCard("GitHub") {
-                Text(if (hasToken) "Connected. Private release assets and the private Library catalog can refresh." else "Paste a fine-grained GitHub token with read access to the private repositories you want Library to see.", color = TextSecondary, fontSize = 13.sp)
+                Text(
+                    if (hasToken) "Connected for private repositories and release assets." else "Connect a fine-grained token with read access to the private repositories you want in Library.",
+                    color = TextSecondary,
+                    fontSize = 13.sp
+                )
                 Spacer(Modifier.height(12.dp))
                 if (!hasToken) {
-                    OutlinedTextField(value = token, onValueChange = { token = it }, modifier = Modifier.fillMaxWidth(), label = { Text("GitHub token") }, singleLine = true, visualTransformation = PasswordVisualTransformation())
+                    OutlinedTextField(
+                        value = token,
+                        onValueChange = { token = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("GitHub token") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation()
+                    )
                     Spacer(Modifier.height(10.dp))
-                    Button(onClick = { if (token.isNotBlank()) { onSave(token); token = "" } }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) { Text("Connect GitHub") }
+                    Button(
+                        onClick = { if (token.isNotBlank()) { onSave(token); token = "" } },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp)
+                    ) { Text("Connect GitHub") }
                 } else {
-                    Row { Icon(Icons.Default.CheckCircle, null, tint = Acid); Spacer(Modifier.width(8.dp)); Text("Credentials encrypted with Android Keystore", color = TextPrimary, fontSize = 12.sp) }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.CheckCircle, null, tint = Acid)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Stored with Android Keystore", color = TextPrimary, fontSize = 12.sp)
+                    }
                     Spacer(Modifier.height(12.dp))
-                    Button(onClick = onClear, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF292B30)), modifier = Modifier.fillMaxWidth()) { Text("Disconnect") }
+                    Button(
+                        onClick = onClear,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF292B30)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Disconnect") }
                 }
             }
         }
-        item { SectionCard("Catalog") { Text("Repository: ${BuildConfig.CATALOG_REPOSITORY}", color = TextSecondary, fontSize = 12.sp); warning?.let { Spacer(Modifier.height(8.dp)); Text(it, color = MaterialTheme.colorScheme.error, fontSize = 11.sp) }; Spacer(Modifier.height(12.dp)); Button(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Refresh, null); Spacer(Modifier.width(8.dp)); Text("Refresh now") } } }
-        item { SectionCard("Library ${BuildConfig.VERSION_NAME}") { Text("Release-signed builds are produced only by CI using the stable Library app key. Apps retain their own signing identities.", color = TextSecondary, fontSize = 13.sp) } }
+        item {
+            SectionCard("Catalog") {
+                Text(BuildConfig.CATALOG_REPOSITORY, color = TextSecondary, fontSize = 12.sp)
+                warning?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, color = MaterialTheme.colorScheme.error, fontSize = 11.sp)
+                }
+                Spacer(Modifier.height(12.dp))
+                Button(onClick = onRefresh, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
+                    Icon(Icons.Default.Refresh, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Refresh")
+                }
+            }
+        }
+        item {
+            SectionCard("Library ${BuildConfig.VERSION_NAME}") {
+                Text("Library verifies every APK before installation and keeps each app's signing identity intact.", color = TextSecondary, fontSize = 13.sp)
+            }
+        }
     }
 }
 
 @Composable
-private fun Notice(message: String) { Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color(0xFF211D14)).padding(13.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Lock, null, tint = Color(0xFFFFC766), modifier = Modifier.size(17.dp)); Spacer(Modifier.width(9.dp)); Text(message, color = Color(0xFFD8C8A7), fontSize = 11.sp) } }
+private fun Notice(message: String) {
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color(0xFF211D14)).padding(13.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(Icons.Default.Lock, null, tint = Color(0xFFFFC766), modifier = Modifier.size(17.dp))
+        Spacer(Modifier.width(9.dp))
+        Text(message, color = Color(0xFFD8C8A7), fontSize = 11.sp)
+    }
+}
 
 @Composable
-private fun EmptyCard(title: String, body: String) { Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(Color(0xFF121315)).padding(24.dp)) { Icon(Icons.Default.LibraryBooks, null, tint = Acid); Spacer(Modifier.height(20.dp)); Text(title, color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold); Spacer(Modifier.height(6.dp)); Text(body, color = TextSecondary, fontSize = 13.sp) } }
+private fun EmptyCard(title: String, body: String) {
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(Color(0xFF121315)).padding(24.dp)) {
+        Icon(Icons.Default.LibraryBooks, null, tint = Acid)
+        Spacer(Modifier.height(20.dp))
+        Text(title, color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(6.dp))
+        Text(body, color = TextSecondary, fontSize = 13.sp)
+    }
+}
 
-private fun trustLabel(kind: TrustKind) = when (kind) { TrustKind.DEVELOPER_SIGNED -> "Developer signed"; TrustKind.LIBRARY_BUILT -> "Built by Library"; TrustKind.BINARY -> "Binary release" }
+private fun InstallState.isBusy(): Boolean =
+    this is InstallState.Downloading || this is InstallState.Verifying || this is InstallState.Installing || this is InstallState.AwaitingPermission
+
+private fun trustLabel(kind: TrustKind) = when (kind) {
+    TrustKind.DEVELOPER_SIGNED -> "Developer signed"
+    TrustKind.LIBRARY_BUILT -> "Built by Library"
+    TrustKind.BINARY -> "Binary release"
+}
+
 private fun shortHash(hash: String) = hash.replace(":", "").chunked(4).take(8).joinToString(" ") + " …"
 private fun formatBytes(bytes: Long): String = if (bytes <= 0) "—" else "%.1f MB".format(bytes / 1_048_576.0)
 private fun openUrl(context: Context, url: String) { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
