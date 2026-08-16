@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -262,7 +263,7 @@ private fun MainShell(
 }
 
 @Composable
-private fun NavItem(tab: Tab, current: Tab, label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, onTab: (Tab) -> Unit) {
+private fun RowScope.NavItem(tab: Tab, current: Tab, label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, onTab: (Tab) -> Unit) {
     NavigationBarItem(
         selected = tab == current,
         onClick = { onTab(tab) },
