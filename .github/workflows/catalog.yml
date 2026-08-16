@@ -12,13 +12,30 @@ on:
   schedule:
     - cron: '17 */6 * * *'
   workflow_dispatch:
+    inputs:
+      source_repository:
+        description: Repository whose release triggered this refresh
+        required: false
+        type: string
+      release_id:
+        description: GitHub release ID that triggered this refresh
+        required: false
+        type: string
+      release_tag:
+        description: GitHub release tag that triggered this refresh
+        required: false
+        type: string
+      delivery_id:
+        description: GitHub webhook delivery ID
+        required: false
+        type: string
 
 permissions:
   contents: write
 
 concurrency:
   group: library-catalog
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   refresh:
@@ -30,6 +47,17 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v5
+
+      - name: Trigger context
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.source_repository != '' }}
+        env:
+          SOURCE_REPOSITORY: ${{ inputs.source_repository }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          DELIVERY_ID: ${{ inputs.delivery_id }}
+        run: |
+          printf 'Catalog refresh requested by %s (%s, release %s, delivery %s)\n' \
+            "$SOURCE_REPOSITORY" "$RELEASE_TAG" "$RELEASE_ID" "$DELIVERY_ID"
 
       - uses: android-actions/setup-android@v3
 
