@@ -124,17 +124,33 @@ def _paged(gh: GitHub, url_for_page, authenticated: bool):
 
 
 def repos(gh: GitHub, owner: str):
-    # Always enumerate public repos anonymously so a repo-scoped Actions token cannot
-    # accidentally hide the rest of the owner's public Android releases.
-    public = _paged(
-        gh,
-        lambda page: f"{API}/users/{urllib.parse.quote(owner)}/repos?per_page=100&page={page}&sort=updated",
-        authenticated=False,
+    public_url = lambda page: (
+        f"{API}/users/{urllib.parse.quote(owner)}/repos?per_page=100&page={page}&sort=updated"
     )
+
+    # Prefer anonymous public discovery so a fine-grained token limited to selected
+    # repositories cannot hide unrelated public apps. GitHub-hosted runner IPs can
+    # exhaust the shared anonymous API quota, though, so retry the same public endpoint
+    # with the configured token and continue with authenticated-visible repos if needed.
+    try:
+        public = _paged(gh, public_url, authenticated=False)
+    except urllib.error.HTTPError as exc:
+        if exc.code != 403 or not gh.token:
+            raise
+        print("! anonymous public repository enumeration rate-limited; retrying authenticated")
+        try:
+            public = _paged(gh, public_url, authenticated=True)
+        except urllib.error.HTTPError as authenticated_exc:
+            print(
+                "! public repository enumeration unavailable after authenticated retry: "
+                f"HTTP {authenticated_exc.code}; continuing with token-visible repositories"
+            )
+            public = []
+
     merged = {repo["full_name"]: repo for repo in public}
 
-    # A fine-grained PAT can add private repos. The built-in GITHUB_TOKEN normally
-    # contributes only this repository; that's still useful for Library self-updates.
+    # A fine-grained PAT can add selected private repos. The built-in GITHUB_TOKEN
+    # normally contributes only this repository; that's still useful for self-updates.
     if gh.token:
         try:
             private_and_visible = _paged(
