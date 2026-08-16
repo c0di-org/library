@@ -38,6 +38,11 @@ jobs:
         run: |
           python3 -m py_compile scripts/*.py
           for script in scripts/*.sh; do bash -n "$script"; done
+          python3 - <<'PY'
+          from pathlib import Path
+          from scripts.manage_unsigned_apks import load_config
+          load_config(Path("config/managed-apps.json"))
+          PY
 
       - name: Validate bundled catalog
         run: |
