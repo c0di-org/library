@@ -41,7 +41,8 @@ jobs:
           if ! gh release view catalog >/dev/null 2>&1; then
             gh release create catalog --title "Library Catalog" --notes "Rolling machine-generated Library catalog."
           fi
-          gh release upload catalog catalog/library.json#catalog.json --clobber
+          cp catalog/library.json "$RUNNER_TEMP/catalog.json"
+          gh release upload catalog "$RUNNER_TEMP/catalog.json" --clobber
 
       - name: Upload catalog workflow artifact
         uses: actions/upload-artifact@v4
