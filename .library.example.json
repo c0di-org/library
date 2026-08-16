@@ -7,8 +7,5 @@
   "featured": false,
   "sourceVisible": true,
   "provenance": "developer-signed",
-  "assetPattern": "release.*\\.apk$",
-  "distribution": {
-    "mode": "developer-signed"
-  }
+  "assetPattern": "release.*\\.apk$"
 }
