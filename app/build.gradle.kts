@@ -17,12 +17,12 @@ val hasReleaseSigning = listOf(signingStoreFile, signingStorePassword, signingKe
 
 android {
     namespace = "com.garfbargle.library"
-    compileSdk = 37
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.garfbargle.library"
         minSdk = 28
-        targetSdk = 37
+        targetSdk = 36
         versionCode = libraryVersionCode.get()
         versionName = libraryVersionName.get()
         buildConfigField("String", "CATALOG_URL", "\"${catalogUrl.get()}\"")
