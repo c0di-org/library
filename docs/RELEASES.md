@@ -41,18 +41,28 @@ Delete the temporary `.b64` file after storing the secret.
 
 Add `LIBRARY_GITHUB_TOKEN` as a fine-grained token with read-only access to the private repositories that should appear in Library. Public repositories are still scanned without it.
 
-## 4. Cut a Library release
+## 4. Publish Library
 
-Push a semantic-version tag:
+`gradle.properties` contains the single release version:
 
-```bash
-git tag v1.0.0
-git push origin v1.0.0
+```properties
+LIBRARY_VERSION=1.0.0
 ```
 
-CI derives a monotonic Android version code using `major * 1,000,000 + minor * 1,000 + patch`, so `1.2.3` becomes `1002003`.
+Every push to `main` runs the release workflow. It compares `LIBRARY_VERSION` with the highest stable `vX.Y.Z` GitHub Release:
 
-The release workflow builds and signature-verifies the APK, then publishes:
+- if the version is equal to or lower than the latest published version, the release job exits successfully without publishing anything;
+- if the version is higher, CI requires the permanent signing secrets, builds and verifies a signed release APK, creates `v<version>`, and publishes the artifacts.
+
+To publish the next version, change only the version and merge it to `main`, for example:
+
+```properties
+LIBRARY_VERSION=1.1.0
+```
+
+Android `versionCode` is derived automatically using `major * 1,000,000 + minor * 1,000 + patch`, so `1.2.3` becomes `1002003`.
+
+The release contains:
 
 ```text
 library-1.0.0.apk
@@ -60,7 +70,7 @@ SHA256SUMS.txt
 catalog.json
 ```
 
-It then refreshes the rolling `catalog` GitHub Release so the just-published Library version is immediately visible to installed copies.
+After publishing, the workflow refreshes the rolling `catalog` GitHub Release so the just-published Library version is immediately visible to installed copies.
 
 ## 5. Download and install
 
