@@ -1,4 +1,11 @@
 {
   "schemaVersion": 1,
-  "apps": []
+  "apps": [
+    {
+      "repository": "garfbargle/papyrus",
+      "packageName": "com.papyrus.notes",
+      "branch": "main",
+      "artifact": "library-unsigned-apk"
+    }
+  ]
 }
