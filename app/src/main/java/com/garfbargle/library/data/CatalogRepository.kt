@@ -57,8 +57,11 @@ class CatalogRepository(
                 break
             }
         }
-        val selected = if (!token.isNullOrBlank()) apiUrl ?: browserUrl else browserUrl ?: apiUrl
-            ?: error("The catalog release does not contain catalog.json.")
+        val selected = (
+            if (!token.isNullOrBlank()) apiUrl ?: browserUrl
+            else browserUrl ?: apiUrl
+        ) ?: error("The catalog release does not contain catalog.json.")
+
         return if (selected.startsWith("https://api.github.com/")) {
             GitHubHttp.openBinary(selected, token).use { response ->
                 response.stream.bufferedReader().use { it.readText() }
