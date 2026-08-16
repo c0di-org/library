@@ -23,11 +23,27 @@ SIGNER = re.compile(r"Signer #1 certificate SHA-256 digest:\s*([0-9A-Fa-f:]+)")
 DEFAULT_ARTIFACT = "library-unsigned-apk"
 
 
+class NoAuthCrossHostRedirect(urllib.request.HTTPRedirectHandler):
+    """Do not forward GitHub credentials to temporary download hosts."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is None:
+            return None
+        source = urllib.parse.urlsplit(req.full_url)
+        target = urllib.parse.urlsplit(newurl)
+        if (source.scheme, source.netloc) != (target.scheme, target.netloc):
+            redirected.remove_header("Authorization")
+            redirected.remove_header("X-GitHub-Api-Version")
+        return redirected
+
+
 class GitHub:
     def __init__(self, token: str):
         self.token = token.strip()
         if not self.token:
             raise SystemExit("LIBRARY_GITHUB_TOKEN is required for managed signing")
+        self.download_opener = urllib.request.build_opener(NoAuthCrossHostRedirect())
 
     def request(self, url: str, accept: str = "application/vnd.github+json", method: str = "GET", data: bytes | None = None):
         return urllib.request.Request(
@@ -51,8 +67,10 @@ class GitHub:
         return self.json(f"{API}/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(name)}")
 
     def download(self, url: str, path: Path):
-        request = self.request(url, accept="application/octet-stream")
-        with urllib.request.urlopen(request, timeout=180) as response, path.open("wb") as output:
+        api_path = urllib.parse.urlsplit(url).path
+        accept = "application/vnd.github+json" if "/actions/artifacts/" in api_path else "application/octet-stream"
+        request = self.request(url, accept=accept)
+        with self.download_opener.open(request, timeout=180) as response, path.open("wb") as output:
             shutil.copyfileobj(response, output, 1024 * 1024)
 
     def upload_release_asset(self, upload_url: str, name: str, path: Path, content_type: str):
