@@ -1,6 +1,14 @@
 name: Refresh Catalog
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'scripts/**'
+      - 'catalog/apps/**'
+      - 'catalog/app.schema.json'
+      - '.github/workflows/catalog.yml'
   schedule:
     - cron: '17 */6 * * *'
   workflow_dispatch:
