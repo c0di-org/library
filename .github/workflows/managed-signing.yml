@@ -25,12 +25,31 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Check managed-app enrollment
+        id: enrollment
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = json.loads(Path("config/managed-apps.json").read_text())
+          enabled = bool(root.get("apps"))
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"enabled={'true' if enabled else 'false'}\n")
+          print(f"managed signing {'enabled' if enabled else 'disabled'}: {len(root.get('apps', []))} app(s)")
+          PY
+
       - uses: android-actions/setup-android@v3
+        if: steps.enrollment.outputs.enabled == 'true'
 
       - name: Install APK signing tools
+        if: steps.enrollment.outputs.enabled == 'true'
         run: sdkmanager "build-tools;36.0.0"
 
       - name: Require managed-signing secrets
+        if: steps.enrollment.outputs.enabled == 'true'
         shell: bash
         env:
           KEYSTORE_BASE64: ${{ secrets.LIBRARY_DISTRIBUTION_KEYSTORE_BASE64 }}
@@ -46,10 +65,12 @@ jobs:
           chmod 600 "$RUNNER_TEMP/library-distribution.jks"
           echo "LIBRARY_DISTRIBUTION_KEYSTORE_FILE=$RUNNER_TEMP/library-distribution.jks" >> "$GITHUB_ENV"
 
-      - name: Sign and publish opted-in app artifacts
+      - name: Sign and publish allowlisted app artifacts
+        if: steps.enrollment.outputs.enabled == 'true'
         run: python3 scripts/manage_unsigned_apks.py
 
-      - name: Refresh Library catalog
+      - name: Verify refreshed catalog after publication
+        if: steps.enrollment.outputs.enabled == 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
