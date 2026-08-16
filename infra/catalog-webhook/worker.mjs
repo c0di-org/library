@@ -74,17 +74,14 @@ export function shouldDispatchRelease(payload, env) {
     return { dispatch: false, reason: 'rolling-catalog-release' };
   }
 
-  if (release.draft) return { dispatch: false, reason: 'draft-release' };
-
   if (payload.action === 'deleted' || payload.action === 'unpublished') {
     return { dispatch: true, reason: 'release-removed' };
   }
+  if (release.draft) return { dispatch: false, reason: 'draft-release' };
 
-  const assets = Array.isArray(release.assets) ? release.assets : [];
-  const hasApk = assets.some((asset) => String(asset?.name || '').toLowerCase().endsWith('.apk'));
-  if (!hasApk) return { dispatch: false, reason: 'release-without-apk' };
-
-  return { dispatch: true, reason: 'apk-release' };
+  // Do not require an APK in the webhook payload. GitHub can emit the release event
+  // before release assets finish uploading; sync_github.py is the authoritative APK filter.
+  return { dispatch: true, reason: 'release-change' };
 }
 
 export async function verifyWebhookSignature(secret, body, signature) {
