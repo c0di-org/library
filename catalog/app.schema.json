@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/garfbargle/library/catalog/app.schema.json",
+  "title": "Library app manifest v2",
+  "type": "object",
+  "required": ["id", "name", "packageName", "developer", "tagline", "description", "category", "release", "provenance"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "name": {"type": "string", "minLength": 1},
+    "packageName": {"type": "string", "minLength": 3},
+    "developer": {"type": "string"},
+    "tagline": {"type": "string"},
+    "description": {"type": "string"},
+    "category": {"type": "string"},
+    "accent": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}$"},
+    "featured": {"type": "boolean"},
+    "visibility": {"enum": ["public", "private"]},
+    "repository": {"type": ["string", "null"]},
+    "sourceUrl": {"type": ["string", "null"]},
+    "release": {"type": "object", "required": ["versionName", "versionCode", "minSdk", "targetSdk", "artifacts"]},
+    "provenance": {"type": "object", "required": ["kind"]},
+    "changelog": {"type": "array", "items": {"type": "string"}},
+    "history": {"type": "array"}
+  }
+}

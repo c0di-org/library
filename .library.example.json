@@ -1,0 +1,11 @@
+{
+  "name": "My App",
+  "tagline": "A crisp one-line description.",
+  "description": "Optional long-form storefront copy.",
+  "category": "Utilities",
+  "accent": "#7BA8FF",
+  "featured": false,
+  "sourceVisible": true,
+  "provenance": "developer-signed",
+  "assetPattern": "release.*\\.apk$"
+}

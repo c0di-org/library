@@ -1,0 +1,10 @@
+{
+  "name": "Library",
+  "tagline": "Apps, without the mall.",
+  "description": "A private-first Android storefront for developer-signed GitHub releases. Library verifies the exact APK bytes, package identity, version code, and signing certificate before handing an install to Android.",
+  "category": "System",
+  "accent": "#A9FF68",
+  "featured": true,
+  "sourceVisible": true,
+  "provenance": "developer-signed"
+}

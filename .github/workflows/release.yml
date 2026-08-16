@@ -1,0 +1,161 @@
+name: Release Library
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Semantic version, for example 1.0.0'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: library-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      LIBRARY_GITHUB_TOKEN: ${{ secrets.LIBRARY_GITHUB_TOKEN }}
+      LIBRARY_SIGNING_STORE_PASSWORD: ${{ secrets.LIBRARY_SIGNING_STORE_PASSWORD }}
+      LIBRARY_SIGNING_KEY_ALIAS: ${{ secrets.LIBRARY_SIGNING_KEY_ALIAS }}
+      LIBRARY_SIGNING_KEY_PASSWORD: ${{ secrets.LIBRARY_SIGNING_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK
+        run: sdkmanager "platforms;android-37" "build-tools;36.0.0"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.0'
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+            RELEASE_TAG="${GITHUB_REF_NAME}"
+          else
+            VERSION="${INPUT_VERSION#v}"
+            RELEASE_TAG="v${VERSION}"
+          fi
+          if [[ ! "$VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "Version must be major.minor.patch" >&2
+            exit 1
+          fi
+          MAJOR="${BASH_REMATCH[1]}"
+          MINOR="${BASH_REMATCH[2]}"
+          PATCH="${BASH_REMATCH[3]}"
+          if (( MINOR > 999 || PATCH > 999 )); then
+            echo "minor and patch must be <= 999" >&2
+            exit 1
+          fi
+          VERSION_CODE=$((MAJOR * 1000000 + MINOR * 1000 + PATCH))
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Require stable signing identity
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.LIBRARY_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          for name in KEYSTORE_BASE64 LIBRARY_SIGNING_STORE_PASSWORD LIBRARY_SIGNING_KEY_ALIAS LIBRARY_SIGNING_KEY_PASSWORD; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Missing required release-signing secret: $name" >&2
+              exit 1
+            fi
+          done
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/library-release.jks"
+          chmod 600 "$RUNNER_TEMP/library-release.jks"
+          echo "LIBRARY_SIGNING_STORE_FILE=$RUNNER_TEMP/library-release.jks" >> "$GITHUB_ENV"
+
+      - name: Refresh catalog before build
+        run: |
+          python3 scripts/sync_github.py
+          python3 scripts/build_catalog.py
+          python3 scripts/validate_catalog.py catalog/library.json
+
+      - name: Lint, test, and build signed release
+        run: |
+          gradle --no-daemon lintRelease testDebugUnitTest assembleRelease \
+            -PVERSION_NAME=${{ steps.version.outputs.version }} \
+            -PVERSION_CODE=${{ steps.version.outputs.version_code }}
+
+      - name: Verify release signature and package
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          test -s "$APK"
+          apksigner verify --verbose --print-certs "$APK"
+          aapt2 dump badging "$APK" | head -n 1
+          mkdir -p dist
+          cp "$APK" "dist/library-${{ steps.version.outputs.version }}.apk"
+          (cd dist && sha256sum "library-${{ steps.version.outputs.version }}.apk" > SHA256SUMS.txt)
+          cp catalog/library.json dist/catalog.json
+
+      - name: Publish versioned GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.version.outputs.tag }}"
+          VERSION="${{ steps.version.outputs.version }}"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "Library $VERSION" --generate-notes --target "$GITHUB_SHA"
+          fi
+          gh release upload "$TAG" \
+            "dist/library-$VERSION.apk" \
+            dist/SHA256SUMS.txt \
+            dist/catalog.json \
+            --clobber
+
+      - name: Refresh catalog with the newly published Library APK
+        run: |
+          python3 scripts/sync_github.py
+          python3 scripts/build_catalog.py
+          python3 scripts/validate_catalog.py catalog/library.json
+
+      - name: Publish rolling catalog
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gh release view catalog >/dev/null 2>&1; then
+            gh release create catalog --title "Library Catalog" --notes "Rolling machine-generated Library catalog."
+          fi
+          gh release upload catalog catalog/library.json#catalog.json --clobber
+          cp catalog/library.json dist/catalog.json
+          gh release upload "${{ steps.version.outputs.tag }}" dist/catalog.json --clobber
+
+      - name: Upload signed APK workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: library-${{ steps.version.outputs.version }}
+          path: |
+            dist/library-${{ steps.version.outputs.version }}.apk
+            dist/SHA256SUMS.txt
+            dist/catalog.json
+          if-no-files-found: error
+          retention-days: 30

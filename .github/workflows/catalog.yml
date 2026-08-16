@@ -1,0 +1,51 @@
+name: Refresh Catalog
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: library-catalog
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      LIBRARY_GITHUB_TOKEN: ${{ secrets.LIBRARY_GITHUB_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install APK inspection tools
+        run: sdkmanager "build-tools;36.0.0"
+
+      - name: Discover GitHub APK releases
+        run: |
+          python3 scripts/sync_github.py
+          python3 scripts/build_catalog.py
+          python3 scripts/validate_catalog.py catalog/library.json
+
+      - name: Publish rolling catalog release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gh release view catalog >/dev/null 2>&1; then
+            gh release create catalog --title "Library Catalog" --notes "Rolling machine-generated Library catalog."
+          fi
+          gh release upload catalog catalog/library.json#catalog.json --clobber
+
+      - name: Upload catalog workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: library-catalog-${{ github.run_id }}
+          path: catalog/library.json
+          retention-days: 14
