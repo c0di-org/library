@@ -17,9 +17,26 @@
       "visibility": "private",
       "repository": "garfbargle/library",
       "sourceUrl": "https://github.com/garfbargle/library",
-      "release": {"tag": null, "versionName": "1.0.0", "versionCode": 1000000, "minSdk": 28, "targetSdk": 37, "publishedAt": null, "releaseUrl": null, "artifacts": []},
-      "provenance": {"kind": "developer-signed", "signingCertSha256": null},
-      "changelog": ["GitHub Release discovery with APK metadata and signing-certificate pinning.", "Private-repository support using a device-local GitHub token protected by Android Keystore.", "Signed release CI that publishes installable APKs and a rolling catalog release.", "Native PackageInstaller updates with package, version, hash, and signer verification."],
+      "release": {
+        "tag": null,
+        "versionName": "1.0.0",
+        "versionCode": 1000000,
+        "minSdk": 28,
+        "targetSdk": 36,
+        "publishedAt": null,
+        "releaseUrl": null,
+        "artifacts": []
+      },
+      "provenance": {
+        "kind": "developer-signed",
+        "signingCertSha256": null
+      },
+      "changelog": [
+        "GitHub Release discovery with APK metadata and signing-certificate pinning.",
+        "Private-repository support using a device-local GitHub token protected by Android Keystore.",
+        "Signed release CI that publishes installable APKs and a rolling catalog release.",
+        "Native PackageInstaller updates with package, version, hash, and signer verification."
+      ],
       "history": []
     }
   ]
