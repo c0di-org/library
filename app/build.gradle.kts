@@ -62,8 +62,13 @@ android {
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2026.06.00")
     implementation(composeBom)
-    implementation("androidx.core:core-ktx:1.19.0")
-    implementation("androidx.activity:activity-compose:1.13.0")
+
+    // API 36 is the newest stable SDK available on hosted Android runners today.
+    // Keep the AndroidX base layer on the last generation compiled against API 36;
+    // newer Core releases already require the unpublished API 37 platform.
+    implementation("androidx.core:core-ktx:1.17.0")
+    implementation("androidx.activity:activity-compose:1.11.0")
+
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.foundation:foundation")
