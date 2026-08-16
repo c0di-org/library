@@ -160,7 +160,7 @@ class CatalogRepository(
             versionCode = release.optLong("versionCode", 0),
             category = optString("category", "Apps"),
             minSdk = release.optInt("minSdk", 28),
-            targetSdk = release.optInt("targetSdk", 37),
+            targetSdk = release.optInt("targetSdk", 36),
             featured = optBoolean("featured", false),
             accent = accent,
             trust = trust,
