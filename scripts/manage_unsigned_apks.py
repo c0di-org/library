@@ -232,7 +232,8 @@ def sign_one(gh: GitHub, repo: dict, app: dict, tools: dict, keystore: Path, arg
                 except Exception as exc:
                     print(f"! {repo['full_name']}: could not inspect existing release asset {asset.get('name')}: {exc}")
         if version_code <= highest_version_code:
-            raise ValueError(f"versionCode {version_code} must be greater than published {highest_version_code}")
+            print(f"- {repo['full_name']}: versionCode {version_code} is not newer than published {highest_version_code}; skipping")
+            return False
 
         tag = app.get("tagPrefix", "v") + version_name
         if any(release.get("tag_name") == tag for release in releases):
