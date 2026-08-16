@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
+    branches:
+      - 'release/*'
   workflow_dispatch:
     inputs:
       version:
@@ -30,23 +32,7 @@ jobs:
       LIBRARY_SIGNING_KEY_ALIAS: ${{ secrets.LIBRARY_SIGNING_KEY_ALIAS }}
       LIBRARY_SIGNING_KEY_PASSWORD: ${{ secrets.LIBRARY_SIGNING_KEY_PASSWORD }}
     steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - uses: android-actions/setup-android@v3
-
-      - name: Install Android SDK
-        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
-
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '9.5.0'
-
-      - name: Resolve version
+      - name: Resolve version and source
         id: version
         shell: bash
         env:
@@ -56,9 +42,15 @@ jobs:
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             VERSION="${GITHUB_REF_NAME#v}"
             RELEASE_TAG="${GITHUB_REF_NAME}"
+            SOURCE_REF="${GITHUB_SHA}"
+          elif [[ "${GITHUB_REF_TYPE}" == "branch" && "${GITHUB_REF_NAME}" == release/* ]]; then
+            VERSION="${GITHUB_REF_NAME#release/}"
+            RELEASE_TAG="v${VERSION}"
+            SOURCE_REF="main"
           else
             VERSION="${INPUT_VERSION#v}"
             RELEASE_TAG="v${VERSION}"
+            SOURCE_REF="${GITHUB_SHA}"
           fi
           if [[ ! "$VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
             echo "Version must be major.minor.patch" >&2
@@ -75,6 +67,30 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "source_ref=$SOURCE_REF" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.version.outputs.source_ref }}
+
+      - name: Record release source commit
+        id: source
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.0'
 
       - name: Require stable signing identity
         shell: bash
@@ -123,8 +139,9 @@ jobs:
           set -euo pipefail
           TAG="${{ steps.version.outputs.tag }}"
           VERSION="${{ steps.version.outputs.version }}"
+          SOURCE_SHA="${{ steps.source.outputs.sha }}"
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --title "Library $VERSION" --generate-notes --target "$GITHUB_SHA"
+            gh release create "$TAG" --title "Library $VERSION" --generate-notes --target "$SOURCE_SHA"
           fi
           gh release upload "$TAG" \
             "dist/library-$VERSION.apk" \
