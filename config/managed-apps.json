@@ -6,6 +6,24 @@
       "packageName": "com.papyrus.notes",
       "branch": "main",
       "artifact": "library-unsigned-apk"
+    },
+    {
+      "repository": "garfbargle/Fiddler",
+      "packageName": "app.fiddler.desktop",
+      "branch": "main",
+      "artifact": "library-unsigned-apk"
+    },
+    {
+      "repository": "garfbargle/gitty",
+      "packageName": "app.gitty.desktop",
+      "branch": "main",
+      "artifact": "library-unsigned-apk"
+    },
+    {
+      "repository": "garfbargle/box",
+      "packageName": "dev.localagent.workstation.stock",
+      "branch": "main",
+      "artifact": "library-unsigned-apk"
     }
   ]
 }
