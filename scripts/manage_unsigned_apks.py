@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / "config" / "managed-apps.json"
 API = "https://api.github.com"
 PACKAGE = re.compile(r"package: name='([^']+)' versionCode='([^']+)' versionName='([^']*)'(?:.* split='([^']+)')?")
-SIGNER = re.compile(r"Signer #1 certificate SHA-256 digest:\s*([0-9A-Fa-f:]+)")
+SIGNER = re.compile(r"certificate SHA-256 digest:\s*([0-9A-Fa-f:]+)", re.IGNORECASE)
 DEFAULT_ARTIFACT = "library-unsigned-apk"
 
 
