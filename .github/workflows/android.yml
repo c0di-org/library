@@ -36,6 +36,8 @@ jobs:
         run: |
           python3 -m py_compile scripts/*.py
           for script in scripts/*.sh; do bash -n "$script"; done
+          node --check infra/catalog-webhook/worker.mjs
+          node infra/catalog-webhook/worker.test.mjs
           python3 - <<'PY'
           from pathlib import Path
           from scripts.manage_unsigned_apks import load_config
