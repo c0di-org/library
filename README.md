@@ -4,64 +4,54 @@
 
 **Apps, without the mall.**
 
-Library is a private-first Android app store for software shipped from GitHub Releases. Public and private repositories can live in the same catalog, source links are optional, and every install carries a visible provenance trail.
+Library is a private-first Android app store for software shipped from GitHub. Public and private repositories can live in the same catalog, source links are optional, and every install carries a visible provenance trail.
 
 ## Product
 
 - Native Kotlin + Jetpack Compose storefront with Discover, Library, Updates, search, app details, settings, and provenance UI.
 - Automatically discovers stable GitHub Releases containing standalone Android APKs.
+- Can preserve developer-signed releases unchanged or centrally sign explicitly opted-in unsigned CI artifacts.
 - Reads `versionCode`, `versionName`, SDK requirements, and ABIs from each APK instead of guessing from tags.
 - Pins the exact APK SHA-256 and Android signing-certificate SHA-256.
 - Refuses package, version, hash, or signer mismatches before install.
 - Uses Android `PackageInstaller` for installs and updates.
 - Detects installed versions and surfaces newer catalog versions.
 - Supports private release assets using a device-local GitHub token encrypted with Android Keystore.
-- Keeps Library's signing identity separate from every distributed app's signing identity.
+- Keeps Library's own app signing identity separate from its managed-app distribution identity.
 
 ## How apps enter Library
 
-Publish a stable GitHub Release in one of the configured GitHub repositories with a standalone `.apk` asset. The rolling catalog job scans automatically, downloads the APK, verifies it with Android build tools, and publishes the resulting metadata.
+There are two supported paths.
 
-A source-only repository never appears as installable until it has an actual APK release.
+### Developer-signed releases
 
-Optional `.library.json` metadata in an app repository can customize the storefront:
+Publish a stable GitHub Release containing a standalone signed `.apk`. Library indexes and installs that exact APK unchanged.
 
-```json
-{
-  "name": "My App",
-  "tagline": "A crisp one-line description.",
-  "description": "Optional long-form storefront copy.",
-  "category": "Utilities",
-  "accent": "#7BA8FF",
-  "featured": false,
-  "sourceVisible": true,
-  "provenance": "developer-signed"
-}
-```
+### Library-managed releases
 
-See `.library.example.json`.
+An app repository can opt into managed distribution in `.library.json`. Its CI uploads an unsigned release APK as an Actions artifact named `library-unsigned-apk`; Library validates the repository, configured branch, package name, unsigned state, and version, then aligns, signs, verifies, and publishes the final APK as a stable GitHub Release.
+
+A source-only repository never appears as installable until it has a signed APK release.
+
+Optional `.library.json` metadata can customize the storefront and distribution mode. See `.library.example.json` and `docs/RELEASES.md`.
 
 ## Trust model
 
-Library never re-signs developer releases. It installs the exact developer-signed APK attached to GitHub Releases and records its hash and signer certificate in the catalog.
+Library keeps authorship, build provenance, distribution, and signing identity distinct.
 
 Trust labels are explicit:
 
 - **Developer signed** — original developer APK, unchanged.
-- **Built by Library** — reserved for a future isolated build/signing service with a dedicated key per package.
+- **Library managed** — unsigned CI artifact from an explicitly enrolled repository, validated and signed by Library's managed-app distribution identity.
 - **Binary release** — distributed without a source claim, still hash/signer pinned.
 
-The Library app signing key signs **only Library**.
+The Library application signing key signs **only Library**. Library-managed apps use a separate distribution key. Managed apps currently share that distribution identity, which is an intentional operational tradeoff and should be limited to packages you control and want under one signer.
 
 ## Public and private repositories
 
-Public GitHub releases are discovered anonymously. To index private repositories, configure the optional Actions secret:
+Public GitHub releases are discovered anonymously. To index private repositories, configure `LIBRARY_GITHUB_TOKEN` with read-only access to the repositories Library should index.
 
-```text
-LIBRARY_GITHUB_TOKEN
-```
-
-Use a fine-grained token with read-only access to only the repositories Library should index.
+Library-managed signing requires the same token to have `Actions: read` and `Contents: write` on each enrolled repository so it can retrieve unsigned CI artifacts and publish signed Releases.
 
 Private downloads on Android require GitHub access in Settings. The token is encrypted with an AES-GCM key held by Android Keystore. Library sends authorization only to `api.github.com` and does not forward it to GitHub's release CDN redirects.
 
@@ -71,30 +61,19 @@ Private downloads on Android require GitHub access in Settings. The token is enc
 
 Every push and pull request validates the catalog, runs Android lint/tests, builds a debug APK, and uploads it as an Actions artifact.
 
+### Managed APK signing
+
+Hourly, and on manual dispatch, Library scans explicitly enrolled repositories for a new successful `library-unsigned-apk` artifact. It signs and publishes qualifying builds. Signing secrets live only in Library's protected production environment.
+
 ### Rolling catalog
 
-Every six hours, and on manual dispatch, the catalog workflow scans GitHub releases and publishes `catalog.json` to a rolling GitHub Release tagged `catalog`. Installed copies can refresh the catalog without shipping a new Library APK.
+Every six hours, and on manual dispatch, the catalog workflow scans GitHub releases and publishes `catalog.json` to a rolling GitHub Release tagged `catalog`.
 
 ### Signed Library releases
 
-A semantic-version tag such as `v1.0.0` builds a release-signed APK and publishes:
+Library itself uses an entirely separate stable signing key. A newer semantic version on `main` builds a release-signed APK and publishes its APK, checksum, and catalog.
 
-```text
-library-1.0.0.apk
-SHA256SUMS.txt
-catalog.json
-```
-
-Release CI intentionally refuses to publish without a stable signing key. Configure:
-
-```text
-LIBRARY_KEYSTORE_BASE64
-LIBRARY_SIGNING_STORE_PASSWORD
-LIBRARY_SIGNING_KEY_ALIAS
-LIBRARY_SIGNING_KEY_PASSWORD
-```
-
-Generate the key once, back it up offline, and never regenerate it for later versions. See `docs/RELEASES.md` and `docs/SIGNING.md`.
+See `docs/RELEASES.md` and `docs/SIGNING.md` for setup and operational details.
 
 ## Local build
 
@@ -122,16 +101,17 @@ python3 scripts/validate_catalog.py catalog/library.json
 ## Project layout
 
 ```text
-app/                         Android storefront + installer
-catalog/apps/                manual/bootstrap entries
-catalog/apps/generated/      generated GitHub-release entries
-scripts/sync_github.py       GitHub release discovery + APK inspection
-scripts/build_catalog.py     aggregate catalog generation
-scripts/validate_catalog.py  deterministic validation
-.github/workflows/           CI, rolling catalog, signed releases
-docs/                        architecture, signing, release operations
+app/                             Android storefront + installer
+catalog/apps/                    manual/bootstrap entries
+catalog/apps/generated/          generated GitHub-release entries
+scripts/sync_github.py           GitHub release discovery + APK inspection
+scripts/manage_unsigned_apks.py  managed unsigned-artifact signing + publishing
+scripts/build_catalog.py         aggregate catalog generation
+scripts/validate_catalog.py      deterministic validation
+.github/workflows/               CI, signing, catalog, and Library releases
+docs/                            architecture, signing, release operations
 ```
 
 ## Security boundary
 
-Distribution, authorship, source availability, build provenance, and APK signing are separate concepts. Library's job is to make those distinctions visible while preserving Android's existing package-signing trust model.
+Managed signing is opt-in, not ambient. Library will not sign arbitrary APKs: an enrolled repository must declare the expected package name and branch, and the signer rejects package mismatches and already-signed artifacts before the managed distribution key is used.

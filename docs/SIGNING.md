@@ -17,28 +17,50 @@ The release workflow runs `apksigner verify --verbose --print-certs` on the fina
 
 ## Apps distributed by Library
 
-Library does **not** re-sign developer releases. The APK attached to the developer's GitHub Release is the APK Library installs. Discovery records the exact file SHA-256 and the APK signing-certificate SHA-256, and the Android client verifies both before installation.
+Library supports two signing models.
 
-Never reuse Library's client signing key as a universal app key.
+### Developer-signed
 
-For a future Library source-build service, create a dedicated signing key per package:
+The APK attached to the developer's GitHub Release is installed unchanged. Discovery records the exact file SHA-256 and APK signing-certificate SHA-256, and the Android client verifies both before installation.
+
+### Library-managed
+
+A repository may explicitly opt into Library-managed distribution. Its own CI produces an unsigned release APK and uploads it as a GitHub Actions artifact. Library downloads the artifact, validates the repository, branch, package name, version, and unsigned state, aligns it, signs it with Library's managed-app distribution identity, verifies the final APK, and publishes a normal GitHub Release.
+
+The managed-app distribution key is **not** the Library application key. Never use `LIBRARY_KEYSTORE_*` to sign another package.
+
+Library-managed apps currently share one distribution signing identity for operational simplicity. This increases blast radius: compromise or loss of that key affects every app enrolled in managed signing, and same-certificate apps can participate in Android signature-level trust relationships. Only enroll packages you intentionally want under this common identity.
+
+The preferred security boundary is:
 
 ```text
-com.example.notes   -> dedicated key A
-com.example.camera  -> dedicated key B
+trusted repository CI -> unsigned APK artifact -> Library validation -> managed distribution key -> signed GitHub Release
 ```
 
-The preferred production boundary is:
+The signer refuses artifacts that are already signed or whose package name does not match the repository's `.library.json` allowlist. It also refuses non-monotonic `versionCode` updates when an existing APK release can be inspected.
+
+## Managed distribution secrets
+
+Create the distribution key once with:
+
+```bash
+bash scripts/create_distribution_key.sh library-distribution.jks
+```
+
+Store these only in the Library repository/environment:
 
 ```text
-isolated builder -> unsigned artifact digest -> signing service -> HSM/KMS-backed package key -> signed APK
+LIBRARY_DISTRIBUTION_KEYSTORE_BASE64
+LIBRARY_DISTRIBUTION_STORE_PASSWORD
+LIBRARY_DISTRIBUTION_KEY_ALIAS
+LIBRARY_DISTRIBUTION_KEY_PASSWORD
 ```
 
-Build workers should not be able to export signing private keys.
+`LIBRARY_GITHUB_TOKEN` additionally needs Actions read and Contents write access to each enrolled app repository so Library can retrieve CI artifacts and publish signed Releases.
 
 ## Backups
 
-Keep at least two encrypted/offline backups of the Library release keystore and recovery information. Losing the key means losing the ability to ship normal updates under the same package identity.
+Keep at least two encrypted/offline backups of both stable signing keystores and their recovery information. Losing a key means losing the ability to ship normal updates under the same package identity.
 
 Never commit `.jks`, `.keystore`, base64 key dumps, passwords, or secret-bearing environment files.
 
