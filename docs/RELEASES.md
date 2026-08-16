@@ -25,7 +25,7 @@ Delete temporary base64 files after storing the secret.
 
 ## 3. Configure GitHub repository access
 
-`LIBRARY_GITHUB_TOKEN` is optional for read-only catalog discovery, but required for Library-managed signing. For managed apps, grant it only the enrolled repositories with:
+`LIBRARY_GITHUB_TOKEN` is optional for read-only catalog discovery, but required for Library-managed signing. For every managed app repository, grant only:
 
 ```text
 Actions: read
@@ -41,7 +41,7 @@ Public repositories can still be cataloged anonymously when they are not using m
 
 The Library release contains its signed APK, `SHA256SUMS.txt`, and `catalog.json`.
 
-## 5. Enroll an app in Library-managed signing
+## 5. Make an app produce an unsigned artifact
 
 The app repository should build a release-mode APK **without a release signing configuration** and upload exactly one APK in an Actions artifact named `library-unsigned-apk`.
 
@@ -59,25 +59,33 @@ A minimal app-repository step is:
     if-no-files-found: error
 ```
 
-Add `.library.json` to that app repository:
+The app repository does not receive a JKS, signing password, or Library signing secret.
+
+If you want the catalog to label the resulting releases as Library-managed, set `"provenance": "library-managed"` in that app repository's optional `.library.json` storefront metadata.
+
+## 6. Enroll the app centrally
+
+Add one entry to Library's `config/managed-apps.json`:
 
 ```json
 {
-  "name": "My App",
-  "packageName": "com.garfbargle.myapp",
-  "provenance": "library-managed",
-  "distribution": {
-    "mode": "library-managed",
-    "packageName": "com.garfbargle.myapp",
-    "branch": "main",
-    "artifact": "library-unsigned-apk"
-  }
+  "schemaVersion": 1,
+  "apps": [
+    {
+      "repository": "garfbargle/myapp",
+      "packageName": "com.garfbargle.myapp",
+      "branch": "main",
+      "artifact": "library-unsigned-apk"
+    }
+  ]
 }
 ```
 
-The explicit package name is the signing allowlist. Library will not sign an artifact whose manifest package differs.
+`repository`, `packageName`, and the branch are the signing allowlist. They live in Library so an app-repository compromise cannot authorize the fleet key for some unrelated package.
 
-## 6. Create the managed-app distribution key once
+The artifact field defaults to `library-unsigned-apk`, and the branch defaults to the source repository's default branch when omitted.
+
+## 7. Create the managed-app distribution key once
 
 Run on a trusted machine:
 
@@ -94,7 +102,7 @@ LIBRARY_DISTRIBUTION_KEY_ALIAS
 LIBRARY_DISTRIBUTION_KEY_PASSWORD
 ```
 
-The hourly `Managed APK Signing` workflow looks for the latest successful artifact from each enrolled repository's configured branch. New artifacts are validated, aligned, signed, verified, and published back to that app repository as a stable GitHub Release containing:
+The hourly `Managed APK Signing` workflow looks for the latest successful artifact from each centrally enrolled repository's configured branch. New artifacts are validated, aligned, signed, verified, and published back to that app repository as a stable GitHub Release containing:
 
 ```text
 <repo>-<versionName>.apk
@@ -102,9 +110,9 @@ SHA256SUMS.txt
 provenance.json
 ```
 
-The release notes record the source commit and source Actions artifact ID. Already-published source artifacts are skipped.
+The release notes and provenance file record the source commit and source Actions artifact ID. Already-published source artifacts are skipped.
 
-## 7. Catalog refresh
+## 8. Catalog refresh
 
 The normal catalog job continues to discover stable GitHub Releases. Developer-signed releases and Library-managed signed releases therefore converge into the same downstream catalog and install path.
 
