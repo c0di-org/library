@@ -1,5 +1,7 @@
 # Library
 
+[![Android CI](https://github.com/garfbargle/library/actions/workflows/android.yml/badge.svg)](https://github.com/garfbargle/library/actions/workflows/android.yml)
+
 **Apps, without the mall.**
 
 Library is a private-first Android app store for software shipped from GitHub Releases. Public and private repositories can live in the same catalog, source links are optional, and every install carries a visible provenance trail.
