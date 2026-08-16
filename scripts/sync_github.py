@@ -21,7 +21,6 @@ OUT = ROOT / "catalog" / "apps" / "generated"
 LIBRARY_MANIFEST = ROOT / "catalog" / "apps" / "library.json"
 API = "https://api.github.com"
 PACKAGE = re.compile(r"package: name='([^']+)' versionCode='([^']+)' versionName='([^']*)'(?:.* split='([^']+)')?")
-SIGNER = re.compile(r"Signer #1 certificate SHA-256 digest:\s*([0-9A-Fa-f:]+)")
 
 
 class GitHub:
@@ -65,14 +64,14 @@ class GitHub:
 
 
 def tool(name: str) -> str:
-    hit = shutil.which(name)
-    if hit:
-        return hit
     sdk = os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT")
     if sdk:
         hits = sorted(Path(sdk).glob(f"build-tools/*/{name}"), reverse=True)
         if hits:
             return str(hits[0])
+    hit = shutil.which(name)
+    if hit:
+        return hit
     raise SystemExit(f"{name} is required")
 
 
@@ -97,10 +96,20 @@ def inspect(path: Path, aapt2: str, apksigner: str):
     target = re.search(r"targetSdkVersion:'([^']+)'", badging)
     native = next((line for line in badging.splitlines() if line.startswith("native-code:")), "")
     certs = subprocess.check_output(
-        [apksigner, "verify", "--print-certs", str(path)], text=True, stderr=subprocess.STDOUT
+        [apksigner, "verify", "--verbose", "--print-certs", str(path)],
+        text=True,
+        stderr=subprocess.STDOUT,
     )
-    signer = SIGNER.search(certs)
-    if not signer:
+    signer_digest = None
+    marker = "certificate SHA-256 digest:"
+    for line in certs.splitlines():
+        if marker not in line:
+            continue
+        candidate = line.split(marker, 1)[1].strip().replace(":", "").lower()
+        if re.fullmatch(r"[0-9a-f]{64}", candidate):
+            signer_digest = candidate
+            break
+    if not signer_digest:
         raise ValueError("unreadable signing certificate")
     return {
         "package": package,
@@ -109,7 +118,7 @@ def inspect(path: Path, aapt2: str, apksigner: str):
         "minSdk": int(sdk.group(1)) if sdk else 21,
         "targetSdk": int(target.group(1)) if target else 21,
         "abis": re.findall(r"'([^']+)'", native),
-        "signer": signer.group(1).replace(":", "").lower(),
+        "signer": signer_digest,
     }
 
 
