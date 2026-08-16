@@ -2,16 +2,9 @@ name: Release Library
 
 on:
   push:
-    tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
     branches:
-      - 'release/*'
+      - main
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Semantic version, for example 1.0.0'
-        required: true
-        type: string
 
 permissions:
   contents: write
@@ -32,67 +25,80 @@ jobs:
       LIBRARY_SIGNING_KEY_ALIAS: ${{ secrets.LIBRARY_SIGNING_KEY_ALIAS }}
       LIBRARY_SIGNING_KEY_PASSWORD: ${{ secrets.LIBRARY_SIGNING_KEY_PASSWORD }}
     steps:
-      - name: Resolve version and source
+      - uses: actions/checkout@v5
+
+      - name: Decide whether this version should release
         id: version
         shell: bash
-        env:
-          INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            VERSION="${GITHUB_REF_NAME#v}"
-            RELEASE_TAG="${GITHUB_REF_NAME}"
-            SOURCE_REF="${GITHUB_SHA}"
-          elif [[ "${GITHUB_REF_TYPE}" == "branch" && "${GITHUB_REF_NAME}" == release/* ]]; then
-            VERSION="${GITHUB_REF_NAME#release/}"
-            RELEASE_TAG="v${VERSION}"
-            SOURCE_REF="main"
-          else
-            VERSION="${INPUT_VERSION#v}"
-            RELEASE_TAG="v${VERSION}"
-            SOURCE_REF="${GITHUB_SHA}"
-          fi
+          VERSION="$(sed -n 's/^LIBRARY_VERSION=//p' gradle.properties | tail -n 1 | tr -d '[:space:]')"
           if [[ ! "$VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-            echo "Version must be major.minor.patch" >&2
+            echo "LIBRARY_VERSION must be major.minor.patch" >&2
             exit 1
           fi
+
           MAJOR="${BASH_REMATCH[1]}"
           MINOR="${BASH_REMATCH[2]}"
           PATCH="${BASH_REMATCH[3]}"
           if (( MINOR > 999 || PATCH > 999 )); then
-            echo "minor and patch must be <= 999" >&2
+            echo "LIBRARY_VERSION minor and patch components must be <= 999" >&2
             exit 1
           fi
           VERSION_CODE=$((MAJOR * 1000000 + MINOR * 1000 + PATCH))
+
+          LATEST="$({
+            gh release list --limit 100 --json tagName,isDraft,isPrerelease \
+              --jq '.[] | select(.isDraft == false and .isPrerelease == false) | .tagName' \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+              | sed 's/^v//' \
+              | sort -V \
+              | tail -n 1
+          } || true)"
+          LATEST="${LATEST:-0.0.0}"
+
+          SHOULD_RELEASE=false
+          if [[ "$VERSION" != "$LATEST" ]] && \
+             [[ "$(printf '%s\n%s\n' "$LATEST" "$VERSION" | sort -V | tail -n 1)" == "$VERSION" ]]; then
+            SHOULD_RELEASE=true
+          fi
+
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
-          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
-          echo "source_ref=$SOURCE_REF" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "should_release=$SHOULD_RELEASE" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ steps.version.outputs.source_ref }}
+          if [[ "$SHOULD_RELEASE" == "true" ]]; then
+            echo "Library $VERSION is newer than published $LATEST; release will run." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Library $VERSION is not newer than published $LATEST; nothing to release." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
-      - name: Record release source commit
-        id: source
-        shell: bash
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: No release needed
+        if: steps.version.outputs.should_release != 'true'
+        run: echo "Skipping release because LIBRARY_VERSION is not higher than the latest published version."
 
       - uses: actions/setup-java@v5
+        if: steps.version.outputs.should_release == 'true'
         with:
           distribution: temurin
           java-version: '17'
 
       - uses: android-actions/setup-android@v3
+        if: steps.version.outputs.should_release == 'true'
 
       - name: Install Android SDK
+        if: steps.version.outputs.should_release == 'true'
         run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
 
       - uses: gradle/actions/setup-gradle@v4
+        if: steps.version.outputs.should_release == 'true'
         with:
           gradle-version: '9.5.0'
 
       - name: Require stable signing identity
+        if: steps.version.outputs.should_release == 'true'
         shell: bash
         env:
           KEYSTORE_BASE64: ${{ secrets.LIBRARY_KEYSTORE_BASE64 }}
@@ -109,53 +115,64 @@ jobs:
           echo "LIBRARY_SIGNING_STORE_FILE=$RUNNER_TEMP/library-release.jks" >> "$GITHUB_ENV"
 
       - name: Refresh catalog before build
+        if: steps.version.outputs.should_release == 'true'
         run: |
           python3 scripts/sync_github.py
           python3 scripts/build_catalog.py
           python3 scripts/validate_catalog.py catalog/library.json
 
       - name: Lint, test, and build signed release
-        run: |
-          gradle --no-daemon lintRelease testDebugUnitTest assembleRelease \
-            -PVERSION_NAME=${{ steps.version.outputs.version }} \
-            -PVERSION_CODE=${{ steps.version.outputs.version_code }}
+        if: steps.version.outputs.should_release == 'true'
+        run: gradle --no-daemon lintRelease testDebugUnitTest assembleRelease
 
-      - name: Verify release signature and package
+      - name: Verify release signature, package, and version
+        if: steps.version.outputs.should_release == 'true'
         shell: bash
         run: |
           set -euo pipefail
           APK="app/build/outputs/apk/release/app-release.apk"
+          VERSION="${{ steps.version.outputs.version }}"
+          VERSION_CODE="${{ steps.version.outputs.version_code }}"
           test -s "$APK"
           apksigner verify --verbose --print-certs "$APK"
-          aapt2 dump badging "$APK" | head -n 1
+          BADGING="$(aapt2 dump badging "$APK" | head -n 1)"
+          echo "$BADGING"
+          grep -F "package: name='com.garfbargle.library'" <<< "$BADGING"
+          grep -F "versionCode='$VERSION_CODE'" <<< "$BADGING"
+          grep -F "versionName='$VERSION'" <<< "$BADGING"
           mkdir -p dist
-          cp "$APK" "dist/library-${{ steps.version.outputs.version }}.apk"
-          (cd dist && sha256sum "library-${{ steps.version.outputs.version }}.apk" > SHA256SUMS.txt)
+          cp "$APK" "dist/library-$VERSION.apk"
+          (cd dist && sha256sum "library-$VERSION.apk" > SHA256SUMS.txt)
           cp catalog/library.json dist/catalog.json
 
       - name: Publish versioned GitHub Release
+        if: steps.version.outputs.should_release == 'true'
         shell: bash
         run: |
           set -euo pipefail
           TAG="${{ steps.version.outputs.tag }}"
           VERSION="${{ steps.version.outputs.version }}"
-          SOURCE_SHA="${{ steps.source.outputs.sha }}"
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --title "Library $VERSION" --generate-notes --target "$SOURCE_SHA"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG appeared while this run was building; refusing to overwrite it." >&2
+            exit 1
           fi
-          gh release upload "$TAG" \
+          gh release create "$TAG" \
+            --title "Library $VERSION" \
+            --generate-notes \
+            --target "$GITHUB_SHA" \
             "dist/library-$VERSION.apk" \
             dist/SHA256SUMS.txt \
-            dist/catalog.json \
-            --clobber
+            dist/catalog.json
 
       - name: Refresh catalog with the newly published Library APK
+        if: steps.version.outputs.should_release == 'true'
         run: |
           python3 scripts/sync_github.py
           python3 scripts/build_catalog.py
           python3 scripts/validate_catalog.py catalog/library.json
 
       - name: Publish rolling catalog
+        if: steps.version.outputs.should_release == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -167,6 +184,7 @@ jobs:
           gh release upload "${{ steps.version.outputs.tag }}" dist/catalog.json --clobber
 
       - name: Upload signed APK workflow artifact
+        if: steps.version.outputs.should_release == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: library-${{ steps.version.outputs.version }}
