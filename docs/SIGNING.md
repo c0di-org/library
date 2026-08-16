@@ -25,7 +25,9 @@ The APK attached to the developer's GitHub Release is installed unchanged. Disco
 
 ### Library-managed
 
-A repository may explicitly opt into Library-managed distribution. Its own CI produces an unsigned release APK and uploads it as a GitHub Actions artifact. Library downloads the artifact, validates the repository, branch, package name, version, and unsigned state, aligns it, signs it with Library's managed-app distribution identity, verifies the final APK, and publishes a normal GitHub Release.
+An app repository may be explicitly enrolled in `config/managed-apps.json`. Its own CI produces an unsigned release APK and uploads it as a GitHub Actions artifact. Library downloads the artifact from the allowlisted repository and branch, verifies the manifest package against the package name pinned in Library, confirms the APK is unsigned, checks version monotonicity, aligns it, signs it with Library's managed-app distribution identity, verifies the final APK, and publishes a normal GitHub Release back to the source repository.
+
+The allowlist is intentionally stored in Library rather than in the app repository. A compromise of an enrolled app repository can change its source and CI output, but cannot authorize Library to sign a different Android package without a separate change to `config/managed-apps.json`.
 
 The managed-app distribution key is **not** the Library application key. Never use `LIBRARY_KEYSTORE_*` to sign another package.
 
@@ -34,10 +36,10 @@ Library-managed apps currently share one distribution signing identity for opera
 The preferred security boundary is:
 
 ```text
-trusted repository CI -> unsigned APK artifact -> Library validation -> managed distribution key -> signed GitHub Release
+trusted app CI -> unsigned APK artifact -> Library central allowlist + validation -> managed distribution key -> signed GitHub Release
 ```
 
-The signer refuses artifacts that are already signed or whose package name does not match the repository's `.library.json` allowlist. It also refuses non-monotonic `versionCode` updates when an existing APK release can be inspected.
+The signer refuses artifacts that are already signed, whose package name differs from the central allowlist, that come from the wrong branch, or whose `versionCode` does not increase when an existing APK release can be inspected.
 
 ## Managed distribution secrets
 
@@ -56,7 +58,7 @@ LIBRARY_DISTRIBUTION_KEY_ALIAS
 LIBRARY_DISTRIBUTION_KEY_PASSWORD
 ```
 
-`LIBRARY_GITHUB_TOKEN` additionally needs Actions read and Contents write access to each enrolled app repository so Library can retrieve CI artifacts and publish signed Releases.
+`LIBRARY_GITHUB_TOKEN` additionally needs `Actions: read`, `Contents: write`, and `Metadata: read` on each repository enrolled in `config/managed-apps.json` so Library can retrieve CI artifacts and publish signed Releases. Keep the token scoped to only the repositories Library actually manages.
 
 ## Backups
 
