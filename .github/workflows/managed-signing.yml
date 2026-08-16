@@ -1,10 +1,6 @@
 name: Managed APK Signing
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/managed-signing.yml'
   schedule:
     - cron: '41 * * * *'
   workflow_dispatch:
