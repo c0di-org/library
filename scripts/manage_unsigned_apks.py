@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Sign opted-in unsigned Android CI artifacts and publish stable GitHub Releases."""
+"""Sign centrally allowlisted unsigned Android CI artifacts and publish Releases."""
 from __future__ import annotations
 
 import argparse
-import base64
 import hashlib
 import json
 import os
@@ -11,12 +10,13 @@ import re
 import shutil
 import subprocess
 import tempfile
-import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_CONFIG = ROOT / "config" / "managed-apps.json"
 API = "https://api.github.com"
 PACKAGE = re.compile(r"package: name='([^']+)' versionCode='([^']+)' versionName='([^']*)'(?:.* split='([^']+)')?")
 SIGNER = re.compile(r"Signer #1 certificate SHA-256 digest:\s*([0-9A-Fa-f:]+)")
@@ -46,18 +46,9 @@ class GitHub:
         with urllib.request.urlopen(self.request(url), timeout=60) as response:
             return json.loads(response.read())
 
-    def file(self, repo: dict, path: str, ref: str | None = None):
-        ref = ref or repo["default_branch"]
-        url = f"{API}/repos/{repo['full_name']}/contents/{urllib.parse.quote(path, safe='/')}?ref={urllib.parse.quote(ref)}"
-        try:
-            data = self.json(url)
-        except urllib.error.HTTPError as exc:
-            if exc.code == 404:
-                return None
-            raise
-        if data.get("encoding") == "base64":
-            return base64.b64decode(data["content"]).decode()
-        return None
+    def repo(self, full_name: str):
+        owner, name = split_repo(full_name)
+        return self.json(f"{API}/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(name)}")
 
     def download(self, url: str, path: Path):
         request = self.request(url, accept="application/octet-stream")
@@ -90,6 +81,13 @@ class GitHub:
             return json.loads(response.read())
 
 
+def split_repo(full_name: str):
+    parts = full_name.split("/")
+    if len(parts) != 2 or not all(parts):
+        raise ValueError(f"repository must be owner/name: {full_name!r}")
+    return parts[0], parts[1]
+
+
 def sha256(path: Path):
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -110,14 +108,31 @@ def tool(name: str) -> str:
     raise SystemExit(f"{name} is required")
 
 
-def repo_pages(gh: GitHub, owner: str):
-    page = 1
-    while True:
-        batch = gh.json(f"{API}/user/repos?affiliation=owner&per_page=100&page={page}&sort=updated")
-        yield from [repo for repo in batch if repo.get("owner", {}).get("login", "").lower() == owner.lower()]
-        if len(batch) < 100:
-            break
-        page += 1
+def load_config(path: Path):
+    root = json.loads(path.read_text())
+    if root.get("schemaVersion") != 1:
+        raise ValueError("managed-apps schemaVersion must be 1")
+    apps = root.get("apps")
+    if not isinstance(apps, list):
+        raise ValueError("managed-apps apps must be an array")
+
+    repositories: set[str] = set()
+    packages: set[str] = set()
+    for app in apps:
+        if not isinstance(app, dict):
+            raise ValueError("each managed app must be an object")
+        repository = app.get("repository", "")
+        package = app.get("packageName", "")
+        split_repo(repository)
+        if not package:
+            raise ValueError(f"{repository}: packageName is required")
+        if repository in repositories:
+            raise ValueError(f"duplicate managed repository: {repository}")
+        if package in packages:
+            raise ValueError(f"duplicate managed package: {package}")
+        repositories.add(repository)
+        packages.add(package)
+    return apps
 
 
 def inspect_unsigned_apk(path: Path, aapt2: str, apksigner: str):
@@ -180,16 +195,10 @@ def source_artifact_already_published(releases: list[dict], artifact_id: int):
     return any(marker in (release.get("body") or "") for release in releases)
 
 
-def sign_one(gh: GitHub, repo: dict, meta: dict, tools: dict, keystore: Path, args):
-    distribution = meta.get("distribution") or {}
-    if distribution.get("mode") != "library-managed":
-        return False
-
-    expected_package = distribution.get("packageName") or meta.get("packageName")
-    if not expected_package:
-        raise ValueError("library-managed repositories must declare distribution.packageName or packageName")
-    branch = distribution.get("branch") or repo.get("default_branch")
-    artifact_name = distribution.get("artifact") or DEFAULT_ARTIFACT
+def sign_one(gh: GitHub, repo: dict, app: dict, tools: dict, keystore: Path, args):
+    expected_package = app["packageName"]
+    branch = app.get("branch") or repo.get("default_branch")
+    artifact_name = app.get("artifact") or DEFAULT_ARTIFACT
     run, artifact = latest_artifact(gh, repo, branch, artifact_name)
     if not artifact:
         print(f"- {repo['full_name']}: no successful {artifact_name} artifact on {branch}")
@@ -225,13 +234,14 @@ def sign_one(gh: GitHub, repo: dict, meta: dict, tools: dict, keystore: Path, ar
         if version_code <= highest_version_code:
             raise ValueError(f"versionCode {version_code} must be greater than published {highest_version_code}")
 
-        tag = distribution.get("tagPrefix", "v") + version_name
+        tag = app.get("tagPrefix", "v") + version_name
         if any(release.get("tag_name") == tag for release in releases):
             raise ValueError(f"release tag {tag} already exists but was not created from artifact {artifact['id']}")
 
         unsigned_sha = sha256(unsigned)
         aligned = temp / "aligned.apk"
-        signed = temp / f"{repo['name']}-{version_name}.apk"
+        safe_version = re.sub(r"[^A-Za-z0-9._-]+", "-", version_name).strip("-") or str(version_code)
+        signed = temp / f"{repo['name']}-{safe_version}.apk"
         subprocess.check_call([tools["zipalign"], "-f", "-p", "4", str(unsigned), str(aligned)])
         subprocess.check_call(
             [
@@ -308,7 +318,7 @@ def sign_one(gh: GitHub, repo: dict, meta: dict, tools: dict, keystore: Path, ar
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--owner", default=os.environ.get("LIBRARY_GITHUB_OWNER", "garfbargle"))
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--token", default=os.environ.get("LIBRARY_GITHUB_TOKEN"))
     parser.add_argument("--keystore", default=os.environ.get("LIBRARY_DISTRIBUTION_KEYSTORE_FILE"))
     parser.add_argument("--store-password", default=os.environ.get("LIBRARY_DISTRIBUTION_STORE_PASSWORD"))
@@ -325,23 +335,21 @@ def main():
     if not keystore.is_file():
         raise SystemExit(f"keystore does not exist: {keystore}")
 
+    apps = load_config(args.config)
     tools = {name: tool(name) for name in ("aapt2", "apksigner", "zipalign")}
     gh = GitHub(args.token)
     published = 0
     failures = 0
-    for repo in repo_pages(gh, args.owner):
-        if repo.get("archived") or repo.get("fork") or repo.get("name", "").lower() == "library":
-            continue
+    for app in apps:
         try:
-            raw = gh.file(repo, ".library.json")
-            if not raw:
-                continue
-            meta = json.loads(raw)
-            if sign_one(gh, repo, meta, tools, keystore, args):
+            repo = gh.repo(app["repository"])
+            if repo.get("archived") or repo.get("fork"):
+                raise ValueError("managed repository is archived or a fork")
+            if sign_one(gh, repo, app, tools, keystore, args):
                 published += 1
         except Exception as exc:
             failures += 1
-            print(f"! {repo['full_name']}: {exc}")
+            print(f"! {app.get('repository', '<unknown>')}: {exc}")
     print(f"managed signing complete: {published} published, {failures} failed")
     if failures:
         raise SystemExit(1)
