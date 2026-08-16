@@ -278,10 +278,13 @@ def main():
         if repo.get("archived") or repo.get("fork"):
             continue
         try:
+            meta = metadata(gh, repo)
+            include_prereleases = bool(meta.get("includePrereleases", False))
             releases = [
                 release
                 for release in gh.release_json(repo, f"{API}/repos/{repo['full_name']}/releases?per_page=5")
-                if not release.get("draft") and not release.get("prerelease")
+                if not release.get("draft")
+                and (include_prereleases or not release.get("prerelease"))
             ]
             release = next(
                 (item for item in releases if any(asset.get("name", "").lower().endswith(".apk") for asset in item.get("assets", []))),
@@ -289,7 +292,7 @@ def main():
             )
             if not release:
                 continue
-            manifest = build(gh, repo, release, releases, metadata(gh, repo), aapt2, apksigner)
+            manifest = build(gh, repo, release, releases, meta, aapt2, apksigner)
             write(LIBRARY_MANIFEST if repo["name"].lower() == "library" else OUT / f"{manifest['id']}.json", manifest)
             count += 1
             print(f"+ {repo['full_name']} -> {manifest['packageName']} {manifest['release']['versionName']}")
