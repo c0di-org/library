@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import sys
 from pathlib import Path
+
+MAX_ICON_BYTES = 256 * 1024
+ICON_MIME_TYPES = {"image/png", "image/webp", "image/jpeg"}
 
 
 def fail(message: str) -> None:
@@ -26,6 +31,18 @@ def main() -> None:
             fail(f"duplicate catalog identity: {app_id} / {package}")
         ids.add(app_id)
         packages.add(package)
+
+        icon = app.get("icon")
+        if icon is not None:
+            if icon.get("mimeType") not in ICON_MIME_TYPES:
+                fail(f"{app_id}: unsupported icon MIME type")
+            try:
+                icon_bytes = base64.b64decode(icon.get("dataBase64", ""), validate=True)
+            except (binascii.Error, ValueError):
+                fail(f"{app_id}: invalid icon base64")
+            if not icon_bytes or len(icon_bytes) > MAX_ICON_BYTES:
+                fail(f"{app_id}: icon must be between 1 byte and {MAX_ICON_BYTES} bytes")
+
         release = app.get("release", {})
         if int(release.get("versionCode", -1)) < 0:
             fail(f"{app_id}: invalid versionCode")
