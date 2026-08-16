@@ -6,6 +6,8 @@ import android.content.Intent
 import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import com.garfbargle.library.auth.GitHubTokenStore
 import com.garfbargle.library.data.AppEntry
@@ -32,6 +34,7 @@ class AppInstaller(
     private val tokenStore: GitHubTokenStore
 ) {
     private val deviceApps = DeviceApps(context)
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     fun canRequestPackageInstalls(): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.O || context.packageManager.canRequestPackageInstalls()
@@ -44,33 +47,41 @@ class AppInstaller(
 
     suspend fun install(entry: AppEntry, onState: (InstallState) -> Unit) = withContext(Dispatchers.IO) {
         val artifact = entry.preferredArtifact() ?: run {
-            onState(InstallState.Failed("No compatible APK is attached to this release."))
+            emit(onState, InstallState.Failed("No compatible APK is attached to this release."))
             return@withContext
         }
         val token = tokenStore.token()
         if (artifact.authRequired && token.isNullOrBlank()) {
-            onState(InstallState.Failed("Connect GitHub in Settings to install private releases."))
+            emit(onState, InstallState.Failed("Connect GitHub in Settings to install private releases."))
             return@withContext
         }
 
         val installed = deviceApps.stateFor(entry.packageName)
         if (installed.installed && !installed.signerMatches(entry)) {
-            onState(InstallState.Failed("The installed app uses a different signing key. Library will not replace it."))
+            emit(onState, InstallState.Failed("The installed app uses a different signing key. Library will not replace it."))
             return@withContext
         }
 
         try {
             val apk = File(context.cacheDir, "library-${entry.packageName}-${entry.versionCode}.apk")
             download(artifact.apiUrl ?: artifact.downloadUrl ?: error("Release asset URL is missing."), artifact.authRequired, token, apk) {
-                onState(InstallState.Downloading(it))
+                emit(onState, InstallState.Downloading(it))
             }
-            onState(InstallState.Verifying)
+            emit(onState, InstallState.Verifying)
             verify(entry, artifact.sha256, apk)
-            onState(InstallState.Installing)
+            emit(onState, InstallState.Installing)
             stage(entry, apk)
         } catch (t: Throwable) {
             apkCleanup(entry)
-            onState(InstallState.Failed(t.message ?: "Installation failed"))
+            emit(onState, InstallState.Failed(t.message ?: "Installation failed"))
+        }
+    }
+
+    private fun emit(onState: (InstallState) -> Unit, state: InstallState) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            onState(state)
+        } else {
+            mainHandler.post { onState(state) }
         }
     }
 
