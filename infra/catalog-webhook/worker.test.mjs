@@ -29,8 +29,19 @@ assert.equal(
   false,
 );
 assert.equal(
-  shouldDispatchRelease({ ...payload, release: { ...payload.release, assets: [{ name: 'notes.txt' }] } }, env).dispatch,
-  false,
+  shouldDispatchRelease({ ...payload, release: { ...payload.release, assets: [] } }, env).dispatch,
+  true,
+);
+assert.equal(
+  shouldDispatchRelease(
+    {
+      ...payload,
+      action: 'deleted',
+      release: { ...payload.release, draft: true, assets: [] },
+    },
+    env,
+  ).dispatch,
+  true,
 );
 assert.equal(
   shouldDispatchRelease(
