@@ -10,74 +10,110 @@ bash scripts/create_release_key.sh library-release.jks
 
 Back up the keystore offline before publishing anything.
 
-## 2. Configure GitHub Actions signing secrets
+## 2. Configure Library release signing secrets
 
-Base64-encode the keystore without line wrapping.
-
-Linux:
-
-```bash
-base64 -w 0 library-release.jks > library-release.jks.b64
-```
-
-macOS:
-
-```bash
-base64 < library-release.jks | tr -d '\n' > library-release.jks.b64
-```
-
-Add these repository secrets:
+Base64-encode the keystore without line wrapping and configure:
 
 ```text
-LIBRARY_KEYSTORE_BASE64       contents of library-release.jks.b64
+LIBRARY_KEYSTORE_BASE64
 LIBRARY_SIGNING_STORE_PASSWORD
 LIBRARY_SIGNING_KEY_ALIAS
 LIBRARY_SIGNING_KEY_PASSWORD
 ```
 
-Delete the temporary `.b64` file after storing the secret.
+Delete temporary base64 files after storing the secret.
 
-## 3. Optional private-repository discovery
+## 3. Configure GitHub repository access
 
-Add `LIBRARY_GITHUB_TOKEN` as a fine-grained token with read-only access to the private repositories that should appear in Library. Public repositories are still scanned without it.
+`LIBRARY_GITHUB_TOKEN` is optional for read-only catalog discovery, but required for Library-managed signing. For every managed app repository, grant only:
+
+```text
+Actions: read
+Contents: write
+Metadata: read
+```
+
+Public repositories can still be cataloged anonymously when they are not using managed signing.
 
 ## 4. Publish Library
 
-`gradle.properties` contains the single release version:
+`gradle.properties` contains the single Library release version. Every push to `main` compares that version with the highest stable `vX.Y.Z` GitHub Release and publishes only when the version increases.
 
-```properties
-LIBRARY_VERSION=1.0.0
+The Library release contains its signed APK, `SHA256SUMS.txt`, and `catalog.json`.
+
+## 5. Make an app produce an unsigned artifact
+
+The app repository should build a release-mode APK **without a release signing configuration** and upload exactly one APK in an Actions artifact named `library-unsigned-apk`.
+
+A minimal app-repository step is:
+
+```yaml
+- name: Build unsigned release APK
+  run: ./gradlew assembleRelease
+
+- name: Upload unsigned APK for Library
+  uses: actions/upload-artifact@v4
+  with:
+    name: library-unsigned-apk
+    path: app/build/outputs/apk/release/*.apk
+    if-no-files-found: error
 ```
 
-Every push to `main` runs the release workflow. It compares `LIBRARY_VERSION` with the highest stable `vX.Y.Z` GitHub Release:
+The app repository does not receive a JKS, signing password, or Library signing secret.
 
-- if the version is equal to or lower than the latest published version, the release job exits successfully without publishing anything;
-- if the version is higher, CI requires the permanent signing secrets, builds and verifies a signed release APK, creates `v<version>`, and publishes the artifacts.
+If you want the catalog to label the resulting releases as Library-managed, set `"provenance": "library-managed"` in that app repository's optional `.library.json` storefront metadata.
 
-To publish the next version, change only the version and merge it to `main`, for example:
+## 6. Enroll the app centrally
 
-```properties
-LIBRARY_VERSION=1.1.0
+Add one entry to Library's `config/managed-apps.json`:
+
+```json
+{
+  "schemaVersion": 1,
+  "apps": [
+    {
+      "repository": "garfbargle/myapp",
+      "packageName": "com.garfbargle.myapp",
+      "branch": "main",
+      "artifact": "library-unsigned-apk"
+    }
+  ]
+}
 ```
 
-Android `versionCode` is derived automatically using `major * 1,000,000 + minor * 1,000 + patch`, so `1.2.3` becomes `1002003`.
+`repository`, `packageName`, and the branch are the signing allowlist. They live in Library so an app-repository compromise cannot authorize the fleet key for some unrelated package.
 
-The release contains:
+The artifact field defaults to `library-unsigned-apk`, and the branch defaults to the source repository's default branch when omitted.
+
+## 7. Create the managed-app distribution key once
+
+Run on a trusted machine:
+
+```bash
+bash scripts/create_distribution_key.sh library-distribution.jks
+```
+
+Back it up separately from the Library application key. Base64-encode it and configure these Library production secrets:
 
 ```text
-library-1.0.0.apk
-SHA256SUMS.txt
-catalog.json
+LIBRARY_DISTRIBUTION_KEYSTORE_BASE64
+LIBRARY_DISTRIBUTION_STORE_PASSWORD
+LIBRARY_DISTRIBUTION_KEY_ALIAS
+LIBRARY_DISTRIBUTION_KEY_PASSWORD
 ```
 
-After publishing, the workflow refreshes the rolling `catalog` GitHub Release so the just-published Library version is immediately visible to installed copies.
+The hourly `Managed APK Signing` workflow looks for the latest successful artifact from each centrally enrolled repository's configured branch. New artifacts are validated, aligned, signed, verified, and published back to that app repository as a stable GitHub Release containing:
 
-## 5. Download and install
+```text
+<repo>-<versionName>.apk
+SHA256SUMS.txt
+provenance.json
+```
 
-Open the matching GitHub Release and download `library-<version>.apk`. The first install requires Android to authorize Library as an unknown-app source. Future updates can be initiated inside Library; Android may still require confirmation depending on OS version, installer ownership, target SDK, and platform policy.
+The release notes and provenance file record the source commit and source Actions artifact ID. Already-published source artifacts are skipped.
 
-## 6. Publish another app to Library
+## 8. Catalog refresh
 
-Publish a stable GitHub Release in that repository containing a standalone `.apk`. No Library catalog edit is required. The scheduled catalog job scans every six hours and can also be run manually.
+The normal catalog job continues to discover stable GitHub Releases. Developer-signed releases and Library-managed signed releases therefore converge into the same downstream catalog and install path.
 
-For polished storefront metadata, add a `.library.json` file to the app repository; `.library.example.json` in this repository shows the supported fields.
+For existing packages, do not switch signing identities casually: Android normally requires updates to use the existing signing identity unless a supported signing-key rotation path is configured.

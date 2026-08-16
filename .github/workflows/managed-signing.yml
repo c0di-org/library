@@ -1,0 +1,79 @@
+name: Managed APK Signing
+
+on:
+  schedule:
+    - cron: '41 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: library-managed-signing
+  cancel-in-progress: false
+
+jobs:
+  sign:
+    environment: production
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      LIBRARY_GITHUB_TOKEN: ${{ secrets.LIBRARY_GITHUB_TOKEN }}
+      LIBRARY_DISTRIBUTION_STORE_PASSWORD: ${{ secrets.LIBRARY_DISTRIBUTION_STORE_PASSWORD }}
+      LIBRARY_DISTRIBUTION_KEY_ALIAS: ${{ secrets.LIBRARY_DISTRIBUTION_KEY_ALIAS }}
+      LIBRARY_DISTRIBUTION_KEY_PASSWORD: ${{ secrets.LIBRARY_DISTRIBUTION_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check managed-app enrollment
+        id: enrollment
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = json.loads(Path("config/managed-apps.json").read_text())
+          enabled = bool(root.get("apps"))
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"enabled={'true' if enabled else 'false'}\n")
+          print(f"managed signing {'enabled' if enabled else 'disabled'}: {len(root.get('apps', []))} app(s)")
+          PY
+
+      - uses: android-actions/setup-android@v3
+        if: steps.enrollment.outputs.enabled == 'true'
+
+      - name: Install APK signing tools
+        if: steps.enrollment.outputs.enabled == 'true'
+        run: sdkmanager "build-tools;36.0.0"
+
+      - name: Require managed-signing secrets
+        if: steps.enrollment.outputs.enabled == 'true'
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.LIBRARY_DISTRIBUTION_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          for name in KEYSTORE_BASE64 LIBRARY_GITHUB_TOKEN LIBRARY_DISTRIBUTION_STORE_PASSWORD LIBRARY_DISTRIBUTION_KEY_ALIAS LIBRARY_DISTRIBUTION_KEY_PASSWORD; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Missing managed-signing secret: $name" >&2
+              exit 1
+            fi
+          done
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/library-distribution.jks"
+          chmod 600 "$RUNNER_TEMP/library-distribution.jks"
+          echo "LIBRARY_DISTRIBUTION_KEYSTORE_FILE=$RUNNER_TEMP/library-distribution.jks" >> "$GITHUB_ENV"
+
+      - name: Sign and publish allowlisted app artifacts
+        if: steps.enrollment.outputs.enabled == 'true'
+        run: python3 scripts/manage_unsigned_apks.py
+
+      - name: Verify refreshed catalog after publication
+        if: steps.enrollment.outputs.enabled == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/sync_github.py
+          python3 scripts/build_catalog.py
+          python3 scripts/validate_catalog.py catalog/library.json

@@ -17,28 +17,52 @@ The release workflow runs `apksigner verify --verbose --print-certs` on the fina
 
 ## Apps distributed by Library
 
-Library does **not** re-sign developer releases. The APK attached to the developer's GitHub Release is the APK Library installs. Discovery records the exact file SHA-256 and the APK signing-certificate SHA-256, and the Android client verifies both before installation.
+Library supports two signing models.
 
-Never reuse Library's client signing key as a universal app key.
+### Developer-signed
 
-For a future Library source-build service, create a dedicated signing key per package:
+The APK attached to the developer's GitHub Release is installed unchanged. Discovery records the exact file SHA-256 and APK signing-certificate SHA-256, and the Android client verifies both before installation.
+
+### Library-managed
+
+An app repository may be explicitly enrolled in `config/managed-apps.json`. Its own CI produces an unsigned release APK and uploads it as a GitHub Actions artifact. Library downloads the artifact from the allowlisted repository and branch, verifies the manifest package against the package name pinned in Library, confirms the APK is unsigned, checks version monotonicity, aligns it, signs it with Library's managed-app distribution identity, verifies the final APK, and publishes a normal GitHub Release back to the source repository.
+
+The allowlist is intentionally stored in Library rather than in the app repository. A compromise of an enrolled app repository can change its source and CI output, but cannot authorize Library to sign a different Android package without a separate change to `config/managed-apps.json`.
+
+The managed-app distribution key is **not** the Library application key. Never use `LIBRARY_KEYSTORE_*` to sign another package.
+
+Library-managed apps currently share one distribution signing identity for operational simplicity. This increases blast radius: compromise or loss of that key affects every app enrolled in managed signing, and same-certificate apps can participate in Android signature-level trust relationships. Only enroll packages you intentionally want under this common identity.
+
+The preferred security boundary is:
 
 ```text
-com.example.notes   -> dedicated key A
-com.example.camera  -> dedicated key B
+trusted app CI -> unsigned APK artifact -> Library central allowlist + validation -> managed distribution key -> signed GitHub Release
 ```
 
-The preferred production boundary is:
+The signer refuses artifacts that are already signed, whose package name differs from the central allowlist, that come from the wrong branch, or whose `versionCode` does not increase when an existing APK release can be inspected.
+
+## Managed distribution secrets
+
+Create the distribution key once with:
+
+```bash
+bash scripts/create_distribution_key.sh library-distribution.jks
+```
+
+Store these only in the Library repository/environment:
 
 ```text
-isolated builder -> unsigned artifact digest -> signing service -> HSM/KMS-backed package key -> signed APK
+LIBRARY_DISTRIBUTION_KEYSTORE_BASE64
+LIBRARY_DISTRIBUTION_STORE_PASSWORD
+LIBRARY_DISTRIBUTION_KEY_ALIAS
+LIBRARY_DISTRIBUTION_KEY_PASSWORD
 ```
 
-Build workers should not be able to export signing private keys.
+`LIBRARY_GITHUB_TOKEN` additionally needs `Actions: read`, `Contents: write`, and `Metadata: read` on each repository enrolled in `config/managed-apps.json` so Library can retrieve CI artifacts and publish signed Releases. Keep the token scoped to only the repositories Library actually manages.
 
 ## Backups
 
-Keep at least two encrypted/offline backups of the Library release keystore and recovery information. Losing the key means losing the ability to ship normal updates under the same package identity.
+Keep at least two encrypted/offline backups of both stable signing keystores and their recovery information. Losing a key means losing the ability to ship normal updates under the same package identity.
 
 Never commit `.jks`, `.keystore`, base64 key dumps, passwords, or secret-bearing environment files.
 
