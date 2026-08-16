@@ -113,7 +113,7 @@ class CatalogRepository(
         }
         val trust = when (provenance.optString("kind", "binary")) {
             "developer-signed" -> TrustKind.DEVELOPER_SIGNED
-            "library-built", "store-built" -> TrustKind.LIBRARY_BUILT
+            "library-built", "library-managed", "store-built" -> TrustKind.LIBRARY_BUILT
             else -> TrustKind.BINARY
         }
         val visibility = when (optString("visibility", "public")) {
