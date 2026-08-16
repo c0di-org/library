@@ -306,7 +306,7 @@ def sign_one(gh: GitHub, repo: dict, app: dict, tools: dict, keystore: Path, arg
             print(f"+ dry-run {repo['full_name']}: {package} {version_name} ({version_code}) <- artifact {artifact['id']}")
             return True
 
-        release = gh.create_release(repo, tag, f"{repo['name']} {version_name}", body, run["head_sha"])
+        release = gh.create_release(repo, tag, f"{repo['name']} {version_name}", body, branch)
         gh.upload_release_asset(release["upload_url"], signed.name, signed, "application/vnd.android.package-archive")
         sums = temp / "SHA256SUMS.txt"
         sums.write_text(f"{signed_sha}  {signed.name}\n")
