@@ -86,6 +86,7 @@ const workflowRunPayload = {
     id: 123,
     event: 'push',
     head_branch: 'main',
+    head_sha: 'abc123',
     conclusion: 'success',
   },
 };

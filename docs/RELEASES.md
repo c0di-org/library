@@ -25,13 +25,15 @@ Delete temporary base64 files after storing the secret.
 
 ## 3. Configure GitHub repository access
 
-`LIBRARY_GITHUB_TOKEN` is optional for read-only catalog discovery, but required for Library-managed signing. For every managed app repository, grant only:
+`LIBRARY_GITHUB_TOKEN` is optional for read-only catalog discovery, but required for Library-managed signing. For every managed app repository, grant only the access needed to read source metadata/artifacts and publish signed releases:
 
 ```text
 Actions: read
 Contents: write
 Metadata: read
 ```
+
+The Library GitHub App needs Actions read access to the source repositories so its webhook can locate a `library-unsigned-apk` candidate. It does not need source contents access for repo-side enrollment; `.library.json` is resolved inside the protected signing workflow with `LIBRARY_GITHUB_TOKEN`.
 
 Public repositories can still be cataloged anonymously when they are not using managed signing.
 
@@ -61,11 +63,35 @@ A minimal app-repository step is:
 
 The app repository does not receive a JKS, signing password, or Library signing secret.
 
-If you want the catalog to label the resulting releases as Library-managed, set `"provenance": "library-managed"` in that app repository's optional `.library.json` storefront metadata.
+For the Tauri convention, this release workflow runs automatically from `main` but only uploads `library-unsigned-apk` when the committed stable version is newer than the latest stable `android-vX.Y.Z` release. Routine/manual CI must not use this artifact name.
 
-## 6. Enroll the app centrally
+## 6. Enroll the app from its repository
 
-Add one entry to Library's `config/managed-apps.json`:
+For repositories owned by the configured Library source owner, put the managed-signing declaration in `.library.json`:
+
+```json
+{
+  "name": "My App",
+  "provenance": "library-managed",
+  "managedSigning": {
+    "packageName": "com.garfbargle.myapp",
+    "tagPrefix": "android-v"
+  }
+}
+```
+
+A successful default-branch workflow containing `library-unsigned-apk` becomes a signing candidate. The webhook passes its repository, run, artifact ID, and source commit to the protected signing workflow. That workflow reads `.library.json` from the exact source commit and requires:
+
+- `provenance` to be `library-managed`;
+- a `managedSigning` object;
+- a valid `managedSigning.packageName` matching the APK;
+- the source repository to belong to the configured Library owner.
+
+`tagPrefix` defaults to `android-v`; the artifact defaults to `library-unsigned-apk`; the branch defaults to the repository default branch.
+
+### Optional central hard pin
+
+`config/managed-apps.json` remains supported. If a repository has a central entry, that entry wins over repo-side metadata. Use this when the app repository must not be able to change its own package declaration, or for legacy/non-Tauri managed integrations.
 
 ```json
 {
@@ -75,15 +101,12 @@ Add one entry to Library's `config/managed-apps.json`:
       "repository": "garfbargle/myapp",
       "packageName": "com.garfbargle.myapp",
       "branch": "main",
-      "artifact": "library-unsigned-apk"
+      "artifact": "library-unsigned-apk",
+      "tagPrefix": "android-v"
     }
   ]
 }
 ```
-
-`repository`, `packageName`, and the branch are the signing allowlist. They live in Library so an app-repository compromise cannot authorize the fleet key for some unrelated package.
-
-The artifact field defaults to `library-unsigned-apk`, and the branch defaults to the source repository's default branch when omitted.
 
 ## 7. Create the managed-app distribution key once
 
@@ -102,7 +125,7 @@ LIBRARY_DISTRIBUTION_KEY_ALIAS
 LIBRARY_DISTRIBUTION_KEY_PASSWORD
 ```
 
-The hourly `Managed APK Signing` workflow looks for the latest successful artifact from each centrally enrolled repository's configured branch. New artifacts are validated, aligned, signed, verified, and published back to that app repository as a stable GitHub Release containing:
+Managed signing is event-driven. A qualifying source workflow dispatches `Managed APK Signing`; the protected job resolves enrollment, validates the unsigned APK, aligns it, signs it, verifies it, and publishes back to the app repository as a stable GitHub Release containing:
 
 ```text
 <repo>-<versionName>.apk
@@ -110,10 +133,10 @@ SHA256SUMS.txt
 provenance.json
 ```
 
-The release notes and provenance file record the source commit and source Actions artifact ID. Already-published source artifacts are skipped.
+The release notes and provenance file record the source commit and source Actions artifact ID. Already-published source artifacts and non-increasing APK `versionCode` values are skipped/rejected.
 
 ## 8. Catalog refresh
 
-The normal catalog job continues to discover stable GitHub Releases. Developer-signed releases and Library-managed signed releases therefore converge into the same downstream catalog and install path.
+The catalog is refreshed by release webhooks and can also be manually dispatched. Developer-signed releases and Library-managed signed releases therefore converge into the same downstream catalog and install path without periodic polling.
 
 For existing packages, do not switch signing identities casually: Android normally requires updates to use the existing signing identity unless a supported signing-key rotation path is configured.

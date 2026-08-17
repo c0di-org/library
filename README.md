@@ -17,15 +17,27 @@ Android app store for APKs shipped through GitHub Releases.
 - Install and update APKs
 - Search, app details, release notes, and source links
 - Verifies package, version, APK SHA-256, and signer
-- Optional managed signing for allowlisted CI artifacts
+- Optional Library-managed signing for unsigned release artifacts
 
 ## Add an app
 
 **Signed release:** publish a stable GitHub Release with a standalone signed `.apk`.
 
-**Managed release:** upload an unsigned Actions artifact named `library-unsigned-apk` and add the repo/package/branch to `config/managed-apps.json`.
+**Managed release:** upload an unsigned Actions artifact named `library-unsigned-apk` and declare the package in the app repo's `.library.json`:
 
-Optional storefront metadata: `.library.json`
+```json
+{
+  "provenance": "library-managed",
+  "managedSigning": {
+    "packageName": "com.example.myapp",
+    "tagPrefix": "android-v"
+  }
+}
+```
+
+For repositories owned by the configured source owner, that file is enough to enroll. `config/managed-apps.json` remains available as an optional central hard pin/override.
+
+Optional storefront metadata also lives in `.library.json`.
 
 ## Build
 

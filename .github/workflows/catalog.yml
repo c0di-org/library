@@ -1,16 +1,6 @@
 name: Refresh Catalog
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - 'scripts/**'
-      - 'catalog/apps/**'
-      - 'catalog/app.schema.json'
-      - '.github/workflows/catalog.yml'
-  schedule:
-    - cron: '17 */6 * * *'
   workflow_dispatch:
     inputs:
       source_repository:
@@ -49,7 +39,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Trigger context
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.source_repository != '' }}
+        if: ${{ inputs.source_repository != '' }}
         env:
           SOURCE_REPOSITORY: ${{ inputs.source_repository }}
           RELEASE_ID: ${{ inputs.release_id }}
