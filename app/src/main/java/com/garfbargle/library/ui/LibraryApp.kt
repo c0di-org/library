@@ -99,6 +99,7 @@ import androidx.core.graphics.drawable.toBitmap
 import com.garfbargle.library.BuildConfig
 import com.garfbargle.library.auth.GitHubTokenStore
 import com.garfbargle.library.data.AppEntry
+import com.garfbargle.library.data.AppRelease
 import com.garfbargle.library.data.CatalogLoadResult
 import com.garfbargle.library.data.CatalogRepository
 import com.garfbargle.library.data.DeviceApps
@@ -116,6 +117,7 @@ import com.garfbargle.library.ui.theme.TextSecondary
 import kotlinx.coroutines.launch
 
 private enum class Tab { LIBRARY, APPS, SETTINGS }
+private data class InstallRequest(val app: AppEntry, val release: AppRelease)
 
 @Composable
 fun LibraryApp() {
@@ -132,43 +134,45 @@ fun LibraryApp() {
     var refreshing by remember { mutableStateOf(false) }
     var tab by rememberSaveable { mutableStateOf(Tab.LIBRARY) }
     var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
-    var pendingPermission by remember { mutableStateOf<AppEntry?>(null) }
-    var replacement by remember { mutableStateOf<AppEntry?>(null) }
-    var installAfterRemoval by remember { mutableStateOf<AppEntry?>(null) }
+    var pendingPermission by remember { mutableStateOf<InstallRequest?>(null) }
+    var replacement by remember { mutableStateOf<InstallRequest?>(null) }
+    var installAfterRemoval by remember { mutableStateOf<InstallRequest?>(null) }
     var hasToken by remember { mutableStateOf(tokenStore.hasToken()) }
     val installed = remember { mutableStateMapOf<String, InstalledState>() }
     val installStates = remember { mutableStateMapOf<String, InstallState>() }
 
     val selected = load?.catalog?.apps?.firstOrNull { it.id == selectedId }
 
-    fun beginInstall(app: AppEntry) {
+    fun beginInstall(request: InstallRequest) {
         scope.launch {
-            installer.install(app) { state -> installStates[app.packageName] = state }
+            installer.install(request.app, request.release) { state ->
+                installStates[request.app.packageName] = state
+            }
         }
     }
 
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-        pendingPermission?.let { app ->
-            if (installer.canRequestPackageInstalls()) beginInstall(app)
-            else installStates[app.packageName] = InstallState.Failed("Allow Library to install apps, then try again.")
+        pendingPermission?.let { request ->
+            if (installer.canRequestPackageInstalls()) beginInstall(request)
+            else installStates[request.app.packageName] = InstallState.Failed("Allow Library to install apps, then try again.")
         }
         pendingPermission = null
     }
 
     val uninstallLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-        replacement?.let { app ->
-            val current = deviceApps.stateFor(app.packageName)
-            installed[app.packageName] = current
+        replacement?.let { request ->
+            val current = deviceApps.stateFor(request.app.packageName)
+            installed[request.app.packageName] = current
             if (!current.installed) {
-                installStates[app.packageName] = InstallState.Idle
-                installAfterRemoval = app
+                installStates[request.app.packageName] = InstallState.Idle
+                installAfterRemoval = request
             }
         }
         replacement = null
     }
 
-    fun requestInstall(app: AppEntry) {
-        if (app.requiresGitHubAuth && !hasToken) {
+    fun requestInstall(app: AppEntry, release: AppRelease = app.currentRelease()) {
+        if ((app.requiresGitHubAuth || release.requiresGitHubAuth) && !hasToken) {
             selectedId = null
             tab = Tab.SETTINGS
             return
@@ -176,23 +180,24 @@ fun LibraryApp() {
         val current = installed[app.packageName] ?: deviceApps.stateFor(app.packageName).also {
             installed[app.packageName] = it
         }
-        if (current.requiresReplacement(app)) {
-            replacement = app
+        val request = InstallRequest(app, release)
+        if (current.requiresRemoval(release)) {
+            replacement = request
             return
         }
         if (installer.canRequestPackageInstalls()) {
-            beginInstall(app)
+            beginInstall(request)
         } else {
-            pendingPermission = app
+            pendingPermission = request
             installStates[app.packageName] = InstallState.AwaitingPermission
             permissionLauncher.launch(installer.unknownSourcesIntent())
         }
     }
 
-    LaunchedEffect(installAfterRemoval?.id) {
-        installAfterRemoval?.let { app ->
+    LaunchedEffect(installAfterRemoval?.let { "${it.app.id}:${it.release.versionCode}" }) {
+        installAfterRemoval?.let { request ->
             installAfterRemoval = null
-            requestInstall(app)
+            requestInstall(request.app, request.release)
         }
     }
 
@@ -229,6 +234,7 @@ fun LibraryApp() {
                 state = installStates[app.packageName] ?: InstallState.Idle,
                 onBack = { selectedId = null },
                 onInstall = { requestInstall(app) },
+                onInstallRelease = { release -> requestInstall(app, release) },
                 onOpen = { openApp(context, app.packageName) },
                 onSource = { app.sourceUrl?.let { openUrl(context, it) } },
                 onRelease = { app.releaseUrl?.let { openUrl(context, it) } },
@@ -246,7 +252,7 @@ fun LibraryApp() {
             onOpen = { selectedId = it.id },
             onLaunch = { openApp(context, it.packageName) },
             onRefresh = { refreshKey++ },
-            onInstall = ::requestInstall,
+            onInstall = { requestInstall(it) },
             onSaveToken = {
                 tokenStore.saveToken(it)
                 hasToken = true
@@ -260,13 +266,20 @@ fun LibraryApp() {
         )
     }
 
-    replacement?.let { app ->
+    replacement?.let { request ->
+        val app = request.app
+        val current = installed[app.packageName] ?: InstalledState(false)
+        val signerChange = current.installed && !current.signerMatches(request.release)
         AlertDialog(
             onDismissRequest = { replacement = null },
-            title = { Text("Replace ${app.name}?") },
+            title = { Text(if (signerChange) "Replace ${app.name}?" else "Downgrade ${app.name}?") },
             text = {
                 Text(
-                    "The installed copy uses a different signing key, so Android cannot update it in place. Remove the current app first, then Library will continue with this build. Removing an app may also remove its local data."
+                    if (signerChange) {
+                        "The selected ${request.release.versionName} release uses a different signing key, so Android cannot install it over the current app. Remove the current app first, then Library will continue. Removing an app may also remove its local data."
+                    } else {
+                        "Android cannot install ${request.release.versionName} over a newer installed version. Remove the current app first, then Library will install the selected older release. Removing an app may also remove its local data."
+                    }
                 )
             },
             dismissButton = { TextButton(onClick = { replacement = null }) { Text("Cancel") } },
@@ -644,22 +657,23 @@ private fun InstallButton(
     onInstall: (AppEntry) -> Unit
 ) {
     val busy = state.isBusy()
+    val replacementRequired = installed.requiresReplacement(app)
+    val passive = installed.installed && !installed.hasUpdate(app) && !replacementRequired
     val label = when (state) {
         is InstallState.Downloading -> state.progress?.let { "${(it * 100).toInt()}%" } ?: "DOWN"
         InstallState.Verifying -> "CHECK"
         InstallState.Installing -> "INSTALL"
         InstallState.AwaitingPermission -> "ALLOW"
         else -> when {
-            installed.requiresReplacement(app) -> "REPLACE"
+            replacementRequired -> "REPLACE"
             installed.hasUpdate(app) -> "UPDATE"
             installed.installed -> "OPEN"
             else -> "GET"
         }
     }
-    val passive = installed.installed && !installed.hasUpdate(app)
     Button(
         onClick = {
-            if (installed.installed && !installed.hasUpdate(app)) onLaunch(app)
+            if (passive) onLaunch(app)
             else onInstall(app)
         },
         enabled = !busy,
@@ -685,6 +699,7 @@ private fun AppDetail(
     state: InstallState,
     onBack: () -> Unit,
     onInstall: () -> Unit,
+    onInstallRelease: (AppRelease) -> Unit,
     onOpen: () -> Unit,
     onSource: () -> Unit,
     onRelease: () -> Unit,
@@ -722,16 +737,18 @@ private fun AppDetail(
             }
             item {
                 val busy = state.isBusy()
+                val replacementRequired = installed.requiresReplacement(app)
+                val canOpen = installed.installed && !installed.hasUpdate(app) && !replacementRequired
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     Button(
-                        onClick = if (installed.installed && !installed.hasUpdate(app)) onOpen else onInstall,
+                        onClick = if (canOpen) onOpen else onInstall,
                         enabled = !busy,
                         modifier = Modifier.height(44.dp),
                         shape = CircleShape,
                         contentPadding = PaddingValues(horizontal = 22.dp),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = if (installed.installed && !installed.hasUpdate(app)) Color(0xFF26282C) else Acid,
-                            contentColor = if (installed.installed && !installed.hasUpdate(app)) TextPrimary else Ink
+                            containerColor = if (canOpen) Color(0xFF26282C) else Acid,
+                            contentColor = if (canOpen) TextPrimary else Ink
                         )
                     ) {
                         Text(
@@ -740,7 +757,7 @@ private fun AppDetail(
                                 state is InstallState.Verifying -> "Verifying"
                                 state is InstallState.Installing -> "Installing"
                                 state is InstallState.AwaitingPermission -> "Allow install"
-                                installed.requiresReplacement(app) -> "Replace"
+                                replacementRequired -> "Replace"
                                 installed.hasUpdate(app) -> "Update"
                                 installed.installed -> "Open"
                                 else -> "Install"
@@ -762,6 +779,9 @@ private fun AppDetail(
                 }
             }
             item { Metadata(app) }
+            if (app.availableReleases().size > 1) {
+                item { VersionsSection(app, installed, state, onInstallRelease) }
+            }
             if (app.sourceUrl != null || app.releaseUrl != null) {
                 item {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -801,6 +821,70 @@ private fun AppDetail(
         ) {
             IconButton(onClick = onBack) {
                 Icon(Icons.Default.ArrowBack, "Back", tint = TextPrimary)
+            }
+        }
+    }
+}
+
+@Composable
+private fun VersionsSection(
+    app: AppEntry,
+    installed: InstalledState,
+    state: InstallState,
+    onInstall: (AppRelease) -> Unit
+) {
+    val releases = app.availableReleases()
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Color(0xFF121315)).padding(16.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.SystemUpdate, null, tint = TextSecondary, modifier = Modifier.size(19.dp))
+            Spacer(Modifier.width(11.dp))
+            Column(Modifier.weight(1f)) {
+                Text("Versions", color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                Text("${releases.size} verified releases available", color = TextSecondary, fontSize = 10.sp)
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        releases.forEachIndexed { index, release ->
+            if (index > 0) HorizontalDivider(color = Color(0xFF23252A))
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(release.versionName, color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                        if (release.versionCode == app.versionCode && (app.releaseTag == null || release.tag == app.releaseTag)) {
+                            Spacer(Modifier.width(7.dp))
+                            Text("LATEST", color = Acid, fontSize = 9.sp, fontWeight = FontWeight.Black)
+                        }
+                    }
+                    val detail = listOfNotNull(
+                        release.tag?.takeIf { it != release.versionName },
+                        release.publishedAt?.take(10),
+                        "code ${release.versionCode}"
+                    ).joinToString(" · ")
+                    Text(detail, color = Color(0xFF73757D), fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Spacer(Modifier.width(10.dp))
+                val signerMismatch = installed.installed && !installed.signerMatches(release)
+                val sameInstalled = installed.installed && installed.versionCode == release.versionCode && !signerMismatch
+                val action = when {
+                    sameInstalled -> "Installed"
+                    signerMismatch -> "Replace"
+                    !installed.installed -> "Install"
+                    installed.versionCode != null && installed.versionCode > release.versionCode -> "Downgrade"
+                    else -> "Update"
+                }
+                OutlinedButton(
+                    onClick = { onInstall(release) },
+                    enabled = !state.isBusy() && !sameInstalled,
+                    shape = CircleShape,
+                    contentPadding = PaddingValues(horizontal = 13.dp, vertical = 0.dp)
+                ) {
+                    Text(action, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                }
             }
         }
     }
@@ -978,7 +1062,7 @@ private fun SecurityDisclosure(app: AppEntry, installed: InstalledState) {
         if (installed.requiresReplacement(app)) {
             Spacer(Modifier.height(10.dp))
             Text(
-                "The installed copy has a different signer and must be removed before this update can be installed.",
+                "The installed copy has a different signer and must be removed before this release can be installed.",
                 color = Color(0xFFFFB86B),
                 fontSize = 12.sp,
                 fontWeight = FontWeight.SemiBold

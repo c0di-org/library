@@ -31,6 +31,26 @@ data class Artifact(
         abis.isEmpty() || deviceAbis.any { it in abis }
 }
 
+data class AppRelease(
+    val tag: String?,
+    val versionName: String,
+    val versionCode: Long,
+    val minSdk: Int,
+    val targetSdk: Int,
+    val publishedAt: String?,
+    val releaseUrl: String?,
+    val signingCertSha256: String?,
+    val artifacts: List<Artifact>,
+    val changelog: List<String>
+) {
+    val sizeBytes: Long get() = preferredArtifact()?.sizeBytes ?: artifacts.maxOfOrNull { it.sizeBytes } ?: 0L
+    val requiresGitHubAuth: Boolean get() = artifacts.any { it.authRequired }
+
+    fun preferredArtifact(deviceAbis: Array<String> = Build.SUPPORTED_ABIS): Artifact? =
+        artifacts.firstOrNull { it.abis.isEmpty() }
+            ?: artifacts.firstOrNull { artifact -> artifact.supportsDevice(deviceAbis) }
+}
+
 data class ReleaseHistoryEntry(
     val tag: String,
     val versionName: String?,
@@ -64,7 +84,8 @@ data class AppEntry(
     val signingCertSha256: String?,
     val artifacts: List<Artifact>,
     val changelog: List<String>,
-    val history: List<ReleaseHistoryEntry>
+    val history: List<ReleaseHistoryEntry>,
+    val releases: List<AppRelease> = emptyList()
 ) {
     val sizeBytes: Long get() = preferredArtifact()?.sizeBytes ?: artifacts.maxOfOrNull { it.sizeBytes } ?: 0L
     val requiresGitHubAuth: Boolean get() = visibility == AppVisibility.PRIVATE || artifacts.any { it.authRequired }
@@ -72,6 +93,28 @@ data class AppEntry(
     fun preferredArtifact(deviceAbis: Array<String> = Build.SUPPORTED_ABIS): Artifact? =
         artifacts.firstOrNull { it.abis.isEmpty() }
             ?: artifacts.firstOrNull { artifact -> artifact.supportsDevice(deviceAbis) }
+
+    fun currentRelease(): AppRelease = releases.firstOrNull {
+        it.versionCode == versionCode && (releaseTag == null || it.tag == releaseTag)
+    } ?: AppRelease(
+        tag = releaseTag,
+        versionName = versionName,
+        versionCode = versionCode,
+        minSdk = minSdk,
+        targetSdk = targetSdk,
+        publishedAt = publishedAt,
+        releaseUrl = releaseUrl,
+        signingCertSha256 = signingCertSha256,
+        artifacts = artifacts,
+        changelog = changelog
+    )
+
+    fun availableReleases(): List<AppRelease> {
+        val current = currentRelease()
+        return (listOf(current) + releases)
+            .distinctBy { it.versionCode to it.tag }
+            .sortedWith(compareByDescending<AppRelease> { it.versionCode }.thenByDescending { it.publishedAt.orEmpty() })
+    }
 }
 
 data class Catalog(
@@ -105,7 +148,17 @@ data class InstalledState(
         return expected.equals(actual, ignoreCase = true)
     }
 
-    fun requiresReplacement(entry: AppEntry): Boolean = hasUpdate(entry) && !signerMatches(entry)
+    fun signerMatches(release: AppRelease): Boolean {
+        if (!installed) return true
+        val expected = release.signingCertSha256?.normalizeFingerprint() ?: return true
+        val actual = signingCertSha256?.normalizeFingerprint() ?: return false
+        return expected.equals(actual, ignoreCase = true)
+    }
+
+    fun requiresReplacement(entry: AppEntry): Boolean = installed && !signerMatches(entry)
+
+    fun requiresRemoval(release: AppRelease): Boolean =
+        installed && (!signerMatches(release) || (versionCode != null && versionCode > release.versionCode))
 }
 
 internal fun String.normalizeFingerprint(): String = replace(":", "").trim().lowercase()

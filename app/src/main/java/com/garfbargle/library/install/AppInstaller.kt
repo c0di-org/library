@@ -12,6 +12,7 @@ import android.os.Looper
 import android.provider.Settings
 import com.garfbargle.library.auth.GitHubTokenStore
 import com.garfbargle.library.data.AppEntry
+import com.garfbargle.library.data.AppRelease
 import com.garfbargle.library.data.DeviceApps
 import com.garfbargle.library.data.normalizeFingerprint
 import com.garfbargle.library.network.GitHubHttp
@@ -55,8 +56,11 @@ class AppInstaller(
             putExtra(Intent.EXTRA_RETURN_RESULT, true)
         }
 
-    suspend fun install(entry: AppEntry, onState: (InstallState) -> Unit) = withContext(Dispatchers.IO) {
-        val artifact = entry.preferredArtifact() ?: run {
+    suspend fun install(entry: AppEntry, onState: (InstallState) -> Unit) =
+        install(entry, entry.currentRelease(), onState)
+
+    suspend fun install(entry: AppEntry, release: AppRelease, onState: (InstallState) -> Unit) = withContext(Dispatchers.IO) {
+        val artifact = release.preferredArtifact() ?: run {
             emit(onState, InstallState.Failed("No compatible APK is attached to this release."))
             return@withContext
         }
@@ -67,22 +71,26 @@ class AppInstaller(
         }
 
         val installed = deviceApps.stateFor(entry.packageName)
-        if (installed.installed && !installed.signerMatches(entry)) {
+        if (installed.installed && !installed.signerMatches(release)) {
             emit(onState, InstallState.Failed("The installed copy is signed differently. Remove it before installing this build."))
+            return@withContext
+        }
+        if (installed.versionCode != null && installed.versionCode > release.versionCode) {
+            emit(onState, InstallState.Failed("Android cannot install an older version over a newer one. Remove the current app first."))
             return@withContext
         }
 
         try {
-            val apk = File(context.cacheDir, "library-${entry.packageName}-${entry.versionCode}.apk")
+            val apk = apkFile(entry, release)
             download(artifact.apiUrl ?: artifact.downloadUrl ?: error("Release asset URL is missing."), artifact.authRequired, token, apk) { progress, downloaded, total ->
                 emit(onState, InstallState.Downloading(progress, downloaded, total))
             }
             emit(onState, InstallState.Verifying)
-            verify(entry, artifact.sha256, apk)
+            verify(entry, release, artifact.sha256, apk)
             emit(onState, InstallState.Installing)
             stage(entry, apk)
         } catch (t: Throwable) {
-            apkCleanup(entry)
+            apkCleanup(entry, release)
             emit(onState, InstallState.Failed(t.message ?: "Installation failed"))
         }
     }
@@ -123,7 +131,7 @@ class AppInstaller(
         }
     }
 
-    private fun verify(entry: AppEntry, expectedSha256: String, apk: File) {
+    private fun verify(entry: AppEntry, release: AppRelease, expectedSha256: String, apk: File) {
         check(apk.length() > 0L) { "Downloaded APK is empty." }
         if (expectedSha256.isNotBlank()) {
             val actual = sha256(apk)
@@ -147,18 +155,18 @@ class AppInstaller(
         val archiveVersionCode = if (Build.VERSION.SDK_INT >= 28) packageInfo.longVersionCode else {
             @Suppress("DEPRECATION") packageInfo.versionCode.toLong()
         }
-        check(archiveVersionCode == entry.versionCode) {
-            "Version mismatch: catalog expects ${entry.versionCode}, APK contains $archiveVersionCode."
+        check(archiveVersionCode == release.versionCode) {
+            "Version mismatch: catalog expects ${release.versionCode}, APK contains $archiveVersionCode."
         }
 
-        entry.signingCertSha256?.let { expected ->
+        release.signingCertSha256?.let { expected ->
             val signer = packageInfo.signingInfo?.apkContentsSigners?.firstOrNull()
                 ?: error("APK signing certificate could not be read.")
             val actual = MessageDigest.getInstance("SHA-256")
                 .digest(signer.toByteArray())
                 .joinToString("") { "%02x".format(it) }
             check(actual.equals(expected.normalizeFingerprint(), ignoreCase = true)) {
-                "Signing certificate mismatch for ${entry.name}."
+                "Signing certificate mismatch for ${entry.name} ${release.versionName}."
             }
         }
     }
@@ -210,7 +218,10 @@ class AppInstaller(
         digest.digest().joinToString("") { "%02x".format(it) }
     }
 
-    private fun apkCleanup(entry: AppEntry) {
-        File(context.cacheDir, "library-${entry.packageName}-${entry.versionCode}.apk").delete()
+    private fun apkFile(entry: AppEntry, release: AppRelease): File =
+        File(context.cacheDir, "library-${entry.packageName}-${release.versionCode}.apk")
+
+    private fun apkCleanup(entry: AppEntry, release: AppRelease) {
+        apkFile(entry, release).delete()
     }
 }
