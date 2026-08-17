@@ -21,7 +21,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GITHUB_TOKEN: ${{ github.token }}
-      LIBRARY_GITHUB_TOKEN: ${{ secrets.LIBRARY_GITHUB_TOKEN }}
+      LIBRARY_GITHUB_APP_CLIENT_ID: ${{ vars.LIBRARY_CATALOG_APP_CLIENT_ID }}
       LIBRARY_SIGNING_STORE_PASSWORD: ${{ secrets.LIBRARY_SIGNING_STORE_PASSWORD }}
       LIBRARY_SIGNING_KEY_ALIAS: ${{ secrets.LIBRARY_SIGNING_KEY_ALIAS }}
       LIBRARY_SIGNING_KEY_PASSWORD: ${{ secrets.LIBRARY_SIGNING_KEY_PASSWORD }}
@@ -80,6 +80,16 @@ jobs:
         if: steps.version.outputs.should_release != 'true'
         run: echo "Skipping release because LIBRARY_VERSION is not higher than the latest published version."
 
+      - name: Mint Library Catalog App token
+        id: catalog-app
+        if: steps.version.outputs.should_release == 'true'
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.LIBRARY_CATALOG_APP_CLIENT_ID }}
+          private-key: ${{ secrets.LIBRARY_CATALOG_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-contents: read
+
       - uses: actions/setup-java@v5
         if: steps.version.outputs.should_release == 'true'
         with:
@@ -117,6 +127,8 @@ jobs:
 
       - name: Refresh catalog before build
         if: steps.version.outputs.should_release == 'true'
+        env:
+          LIBRARY_GITHUB_TOKEN: ${{ steps.catalog-app.outputs.token }}
         run: |
           python3 scripts/sync_github.py
           python3 scripts/build_catalog.py
@@ -171,6 +183,8 @@ jobs:
 
       - name: Refresh catalog with the newly published Library APK
         if: steps.version.outputs.should_release == 'true'
+        env:
+          LIBRARY_GITHUB_TOKEN: ${{ steps.catalog-app.outputs.token }}
         run: |
           python3 scripts/sync_github.py
           python3 scripts/build_catalog.py
