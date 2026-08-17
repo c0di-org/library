@@ -12,11 +12,13 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -24,8 +26,12 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -57,6 +63,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.NavigationRailItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -71,6 +80,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -120,14 +130,16 @@ fun LibraryApp() {
     var error by remember { mutableStateOf<String?>(null) }
     var refreshKey by remember { mutableIntStateOf(0) }
     var refreshing by remember { mutableStateOf(false) }
-    var tab by remember { mutableStateOf(Tab.LIBRARY) }
-    var selected by remember { mutableStateOf<AppEntry?>(null) }
+    var tab by rememberSaveable { mutableStateOf(Tab.LIBRARY) }
+    var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingPermission by remember { mutableStateOf<AppEntry?>(null) }
     var replacement by remember { mutableStateOf<AppEntry?>(null) }
     var installAfterRemoval by remember { mutableStateOf<AppEntry?>(null) }
     var hasToken by remember { mutableStateOf(tokenStore.hasToken()) }
     val installed = remember { mutableStateMapOf<String, InstalledState>() }
     val installStates = remember { mutableStateMapOf<String, InstallState>() }
+
+    val selected = load?.catalog?.apps?.firstOrNull { it.id == selectedId }
 
     fun beginInstall(app: AppEntry) {
         scope.launch {
@@ -157,7 +169,7 @@ fun LibraryApp() {
 
     fun requestInstall(app: AppEntry) {
         if (app.requiresGitHubAuth && !hasToken) {
-            selected = null
+            selectedId = null
             tab = Tab.SETTINGS
             return
         }
@@ -215,7 +227,7 @@ fun LibraryApp() {
                 app = app,
                 installed = installed[app.packageName] ?: InstalledState(false),
                 state = installStates[app.packageName] ?: InstallState.Idle,
-                onBack = { selected = null },
+                onBack = { selectedId = null },
                 onInstall = { requestInstall(app) },
                 onOpen = { openApp(context, app.packageName) },
                 onSource = { app.sourceUrl?.let { openUrl(context, it) } },
@@ -231,7 +243,7 @@ fun LibraryApp() {
             installStates = installStates,
             hasToken = hasToken,
             onTab = { tab = it },
-            onOpen = { selected = it },
+            onOpen = { selectedId = it.id },
             onLaunch = { openApp(context, it.packageName) },
             onRefresh = { refreshKey++ },
             onInstall = ::requestInstall,
@@ -284,60 +296,115 @@ private fun MainShell(
     onSaveToken: (String) -> Unit,
     onClearToken: () -> Unit
 ) {
-    Scaffold(
-        containerColor = Ink,
-        bottomBar = {
-            NavigationBar(containerColor = Color(0xFF0D0E10)) {
-                NavItem(Tab.LIBRARY, tab, "Library", Icons.Default.LibraryBooks, onTab)
-                NavItem(Tab.APPS, tab, "Apps", Icons.Default.Apps, onTab)
-                NavItem(Tab.SETTINGS, tab, "Settings", Icons.Default.Settings, onTab)
-            }
-        }
-    ) { padding ->
-        if (load == null && error == null) {
-            Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(color = Acid)
-            }
-            return@Scaffold
-        }
-        if (load == null) {
-            Box(Modifier.fillMaxSize().padding(padding).padding(28.dp), contentAlignment = Alignment.Center) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("Library couldn't open.", color = TextPrimary, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(8.dp))
-                    Text(error.orEmpty(), color = TextSecondary)
-                    Spacer(Modifier.height(18.dp))
-                    Button(onClick = onRefresh) { Text("Try again") }
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val wideLayout = maxWidth >= 840.dp
+
+        Scaffold(
+            modifier = Modifier.fillMaxSize(),
+            containerColor = Ink,
+            bottomBar = {
+                if (!wideLayout) {
+                    NavigationBar(containerColor = Color(0xFF0D0E10)) {
+                        NavItem(Tab.LIBRARY, tab, "Library", Icons.Default.LibraryBooks, onTab)
+                        NavItem(Tab.APPS, tab, "Apps", Icons.Default.Apps, onTab)
+                        NavItem(Tab.SETTINGS, tab, "Settings", Icons.Default.Settings, onTab)
+                    }
                 }
             }
-            return@Scaffold
-        }
+        ) { padding ->
+            Row(Modifier.fillMaxSize()) {
+                if (wideLayout) {
+                    NavigationRail(
+                        modifier = Modifier.fillMaxHeight().width(88.dp),
+                        containerColor = Color(0xFF0D0E10)
+                    ) {
+                        Spacer(Modifier.height(20.dp))
+                        WideNavItem(Tab.LIBRARY, tab, "Library", Icons.Default.LibraryBooks, onTab)
+                        WideNavItem(Tab.APPS, tab, "Apps", Icons.Default.Apps, onTab)
+                        WideNavItem(Tab.SETTINGS, tab, "Settings", Icons.Default.Settings, onTab)
+                    }
+                }
 
-        val catalog = load.catalog
-        when (tab) {
-            Tab.LIBRARY -> LibraryScreen(
-                catalog.apps,
-                load.warning,
-                refreshing,
-                onOpen,
-                onLaunch,
-                onRefresh,
-                onInstall,
-                installed,
-                installStates
-            )
-            Tab.APPS -> AppsScreen(
-                catalog.apps,
-                onOpen,
-                onLaunch,
-                onInstall,
-                installed,
-                installStates,
-                padding
-            )
-            Tab.SETTINGS -> SettingsScreen(hasToken, load.warning, onSaveToken, onClearToken, onRefresh, padding)
+                Box(Modifier.weight(1f).fillMaxHeight()) {
+                    if (load == null && error == null) {
+                        Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(color = Acid)
+                        }
+                    } else if (load == null) {
+                        Box(Modifier.fillMaxSize().padding(padding).padding(28.dp), contentAlignment = Alignment.Center) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text("Library couldn't open.", color = TextPrimary, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                                Spacer(Modifier.height(8.dp))
+                                Text(error.orEmpty(), color = TextSecondary)
+                                Spacer(Modifier.height(18.dp))
+                                Button(onClick = onRefresh) { Text("Try again") }
+                            }
+                        }
+                    } else {
+                        val catalog = load.catalog
+                        when (tab) {
+                            Tab.LIBRARY -> LibraryScreen(
+                                catalog.apps,
+                                load.warning,
+                                refreshing,
+                                onOpen,
+                                onLaunch,
+                                onRefresh,
+                                onInstall,
+                                installed,
+                                installStates,
+                                padding,
+                                wideLayout
+                            )
+                            Tab.APPS -> AppsScreen(
+                                catalog.apps,
+                                onOpen,
+                                onLaunch,
+                                onInstall,
+                                installed,
+                                installStates,
+                                padding,
+                                wideLayout
+                            )
+                            Tab.SETTINGS -> SettingsScreen(
+                                hasToken,
+                                load.warning,
+                                onSaveToken,
+                                onClearToken,
+                                onRefresh,
+                                padding,
+                                wideLayout
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
+}
+
+@Composable
+private fun WideNavItem(
+    tab: Tab,
+    current: Tab,
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    onTab: (Tab) -> Unit
+) {
+    NavigationRailItem(
+        selected = tab == current,
+        onClick = { onTab(tab) },
+        icon = { Icon(icon, label) },
+        label = { Text(label, fontSize = 11.sp) },
+        alwaysShowLabel = true,
+        colors = NavigationRailItemDefaults.colors(
+            selectedIconColor = Ink,
+            indicatorColor = Acid,
+            unselectedIconColor = TextSecondary,
+            selectedTextColor = TextPrimary,
+            unselectedTextColor = TextSecondary
+        )
+    )
 }
 
 @Composable
@@ -373,19 +440,29 @@ private fun LibraryScreen(
     onRefresh: () -> Unit,
     onInstall: (AppEntry) -> Unit,
     installed: Map<String, InstalledState>,
-    installStates: Map<String, InstallState>
+    installStates: Map<String, InstallState>,
+    padding: PaddingValues,
+    wideLayout: Boolean
 ) {
-    var query by remember { mutableStateOf("") }
+    var query by rememberSaveable { mutableStateOf("") }
     val visible = apps.filter {
         query.isBlank() || it.name.contains(query, true) || it.tagline.contains(query, true) ||
             it.category.contains(query, true) || it.developer.contains(query, true)
     }
 
-    LazyColumn(
-        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 54.dp, bottom = 120.dp),
+    LazyVerticalGrid(
+        columns = if (wideLayout) GridCells.Adaptive(340.dp) else GridCells.Fixed(1),
+        modifier = Modifier.fillMaxSize().padding(padding),
+        contentPadding = PaddingValues(
+            start = if (wideLayout) 32.dp else 20.dp,
+            end = if (wideLayout) 32.dp else 20.dp,
+            top = if (wideLayout) 32.dp else 54.dp,
+            bottom = 32.dp
+        ),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        item {
+        item(span = { GridItemSpan(maxLineSpan) }) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     "Library",
@@ -400,27 +477,31 @@ private fun LibraryScreen(
                 }
             }
         }
-        item {
+        item(span = { GridItemSpan(maxLineSpan) }) {
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.widthIn(max = 720.dp).fillMaxWidth(),
                 shape = RoundedCornerShape(18.dp),
                 singleLine = true,
                 leadingIcon = { Icon(Icons.Default.Search, null) },
                 placeholder = { Text("Search apps") }
             )
         }
-        warning?.let { item { Notice(it) } }
+        warning?.let { message ->
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                Box(Modifier.widthIn(max = 960.dp).fillMaxWidth()) { Notice(message) }
+            }
+        }
         if (visible.isEmpty()) {
-            item {
+            item(span = { GridItemSpan(maxLineSpan) }) {
                 EmptyCard(
                     if (apps.isEmpty()) "No apps yet" else "No match",
                     if (apps.isEmpty()) "Publish a stable GitHub Release with a standalone APK and it will appear after the next catalog refresh." else "Try another search."
                 )
             }
         }
-        items(visible, key = { it.id }) { app ->
+        gridItems(visible, key = { it.id }) { app ->
             AppCard(
                 app,
                 installed[app.packageName] ?: InstalledState(false),
@@ -441,9 +522,10 @@ private fun AppsScreen(
     onInstall: (AppEntry) -> Unit,
     installed: Map<String, InstalledState>,
     installStates: Map<String, InstallState>,
-    padding: PaddingValues
+    padding: PaddingValues,
+    wideLayout: Boolean
 ) {
-    var updatesOnly by remember { mutableStateOf(false) }
+    var updatesOnly by rememberSaveable { mutableStateOf(false) }
     val installedApps = apps.filter { installed[it.packageName]?.installed == true }
     val visible = if (updatesOnly) {
         installedApps.filter { installed[it.packageName]?.hasUpdate(it) == true }
@@ -451,12 +533,14 @@ private fun AppsScreen(
         installedApps
     }
 
-    LazyColumn(
-        modifier = Modifier.padding(padding),
-        contentPadding = PaddingValues(20.dp),
+    LazyVerticalGrid(
+        columns = if (wideLayout) GridCells.Adaptive(340.dp) else GridCells.Fixed(1),
+        modifier = Modifier.fillMaxSize().padding(padding),
+        contentPadding = PaddingValues(if (wideLayout) 32.dp else 20.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        item {
+        item(span = { GridItemSpan(maxLineSpan) }) {
             Spacer(Modifier.height(8.dp))
             Text("Apps", color = TextPrimary, fontSize = 30.sp, fontWeight = FontWeight.Bold)
             Text("Installed on this device.", color = TextSecondary, fontSize = 13.sp)
@@ -475,14 +559,14 @@ private fun AppsScreen(
             )
         }
         if (visible.isEmpty()) {
-            item {
+            item(span = { GridItemSpan(maxLineSpan) }) {
                 EmptyCard(
                     if (updatesOnly) "All current" else "No apps yet",
                     if (updatesOnly) "No installed apps have updates right now." else "Installed catalog apps will collect here."
                 )
             }
         }
-        items(visible, key = { it.id }) { app ->
+        gridItems(visible, key = { it.id }) { app ->
             AppCard(
                 app,
                 installed[app.packageName] ?: InstalledState(false),
@@ -615,9 +699,15 @@ private fun AppDetail(
         readmeLoaded = true
     }
 
-    Box(Modifier.fillMaxSize()) {
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val wideLayout = maxWidth >= 840.dp
+        val sidePadding = if (wideLayout) {
+            ((maxWidth - 1040.dp) / 2f).coerceAtLeast(32.dp)
+        } else {
+            20.dp
+        }
         LazyColumn(
-            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 82.dp, bottom = 70.dp),
+            contentPadding = PaddingValues(start = sidePadding, end = sidePadding, top = 82.dp, bottom = 70.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
             item {
@@ -702,7 +792,9 @@ private fun AppDetail(
         }
 
         Surface(
-            modifier = Modifier.align(Alignment.TopStart).padding(start = 12.dp, top = 12.dp),
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(start = (sidePadding - 8.dp).coerceAtLeast(12.dp), top = 12.dp),
             shape = CircleShape,
             color = Color(0xE61A1B1E),
             shadowElevation = 8.dp
@@ -941,14 +1033,21 @@ private fun SettingsScreen(
     onSave: (String) -> Unit,
     onClear: () -> Unit,
     onRefresh: () -> Unit,
-    padding: PaddingValues
+    padding: PaddingValues,
+    wideLayout: Boolean
 ) {
     var token by remember { mutableStateOf("") }
-    LazyColumn(
-        modifier = Modifier.padding(padding),
-        contentPadding = PaddingValues(20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
+    BoxWithConstraints(Modifier.fillMaxSize().padding(padding)) {
+        val sidePadding = if (wideLayout) {
+            ((maxWidth - 760.dp) / 2f).coerceAtLeast(32.dp)
+        } else {
+            20.dp
+        }
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = sidePadding, end = sidePadding, top = 20.dp, bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
         item {
             Spacer(Modifier.height(8.dp))
             Text("Settings", color = TextPrimary, fontSize = 30.sp, fontWeight = FontWeight.Bold)
@@ -1015,6 +1114,7 @@ private fun SettingsScreen(
                     fontSize = 13.sp
                 )
             }
+        }
         }
     }
 }
