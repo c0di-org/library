@@ -14,6 +14,9 @@ require(versionMinor.toInt() <= 999 && versionPatch.toInt() <= 999) {
 val libraryVersionCode = versionMajor.toInt() * 1_000_000 + versionMinor.toInt() * 1_000 + versionPatch.toInt()
 val catalogUrl = providers.gradleProperty("LIBRARY_CATALOG_URL").orElse("")
 val catalogRepository = providers.gradleProperty("LIBRARY_CATALOG_REPOSITORY").orElse("garfbargle/library")
+val githubAppClientId = providers.environmentVariable("LIBRARY_GITHUB_APP_CLIENT_ID")
+    .orElse(providers.gradleProperty("LIBRARY_GITHUB_APP_CLIENT_ID"))
+    .orElse("")
 
 val signingStoreFile = providers.environmentVariable("LIBRARY_SIGNING_STORE_FILE")
 val signingStorePassword = providers.environmentVariable("LIBRARY_SIGNING_STORE_PASSWORD")
@@ -33,6 +36,7 @@ android {
         versionName = libraryVersionName.get()
         buildConfigField("String", "CATALOG_URL", "\"${catalogUrl.get()}\"")
         buildConfigField("String", "CATALOG_REPOSITORY", "\"${catalogRepository.get()}\"")
+        buildConfigField("String", "GITHUB_APP_CLIENT_ID", "\"${githubAppClientId.get()}\"")
     }
 
     buildFeatures { compose = true; buildConfig = true }
