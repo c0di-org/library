@@ -35,7 +35,6 @@ jobs:
       - name: Commit migration
         shell: bash
         run: |
-          rm .github/workflows/_apply-github-app-auth.yml
           rm scripts/apply_github_app_auth_patch.py
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
