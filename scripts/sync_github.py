@@ -48,7 +48,7 @@ class GitHub:
     def file(self, repo: dict, path: str):
         url = f"{API}/repos/{repo['full_name']}/contents/{urllib.parse.quote(path, safe='/')}?ref={urllib.parse.quote(repo['default_branch'])}"
         try:
-            data = self.json(url, authenticated=bool(repo.get("private")))
+            data = self.json(url, authenticated=bool(self.token))
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 return None
@@ -58,10 +58,10 @@ class GitHub:
         return None
 
     def release_json(self, repo: dict, url: str):
-        return self.json(url, authenticated=bool(repo.get("private")))
+        return self.json(url, authenticated=bool(self.token))
 
     def download(self, repo: dict, asset: dict, path: Path):
-        authenticated = bool(repo.get("private"))
+        authenticated = bool(self.token)
         request = self.request(asset["url"], "application/octet-stream", authenticated=authenticated)
         with urllib.request.urlopen(request, timeout=120) as response, path.open("wb") as output:
             shutil.copyfileobj(response, output, 1024 * 1024)
@@ -366,6 +366,7 @@ def main():
     OUT.mkdir(parents=True)
 
     count = 0
+    api_failures = []
     for repo in repos(gh, args.owner):
         if repo.get("archived") or repo.get("fork"):
             continue
@@ -388,8 +389,25 @@ def main():
             write(LIBRARY_MANIFEST if repo["name"].lower() == "library" else OUT / f"{manifest['id']}.json", manifest)
             count += 1
             print(f"+ {repo['full_name']} -> {manifest['packageName']} {manifest['release']['versionName']}")
+        except urllib.error.HTTPError as exc:
+            failure = f"{repo['full_name']}: HTTP {exc.code}"
+            api_failures.append(failure)
+            print(f"! API failure {failure}")
+        except urllib.error.URLError as exc:
+            failure = f"{repo['full_name']}: {exc.reason}"
+            api_failures.append(failure)
+            print(f"! API failure {failure}")
+        except TimeoutError as exc:
+            failure = f"{repo['full_name']}: {exc}"
+            api_failures.append(failure)
+            print(f"! API failure {failure}")
         except Exception as exc:
             print(f"! skip {repo['full_name']}: {exc}")
+
+    if api_failures:
+        details = "; ".join(api_failures)
+        raise SystemExit(f"GitHub API failures encountered; refusing to publish a partial catalog: {details}")
+
     print(f"discovered {count} installable Android repositories")
 
 
