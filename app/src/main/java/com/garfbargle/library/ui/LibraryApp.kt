@@ -833,59 +833,112 @@ private fun VersionsSection(
     state: InstallState,
     onInstall: (AppRelease) -> Unit
 ) {
-    val releases = app.availableReleases()
+    val current = app.currentRelease()
+    val older = app.availableReleases().filterNot {
+        it.versionCode == current.versionCode && it.tag == current.tag
+    }
+    var showOlder by rememberSaveable(app.id) { mutableStateOf(false) }
+
     Column(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Color(0xFF121315)).padding(16.dp)
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Color(0xFF111214)).padding(horizontal = 16.dp)
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.SystemUpdate, null, tint = TextSecondary, modifier = Modifier.size(19.dp))
-            Spacer(Modifier.width(11.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(enabled = older.isNotEmpty()) { showOlder = !showOlder }
+                .padding(vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             Column(Modifier.weight(1f)) {
-                Text("Versions", color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                Text("${releases.size} verified releases available", color = TextSecondary, fontSize = 10.sp)
+                Text("Version", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text("Latest by default", color = TextSecondary, fontSize = 10.sp)
+            }
+            if (older.isNotEmpty()) {
+                Text(
+                    if (showOlder) "Hide older" else "${older.size} older",
+                    color = TextSecondary,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                Spacer(Modifier.width(6.dp))
+                Icon(
+                    if (showOlder) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = if (showOlder) "Hide older versions" else "Show older versions",
+                    tint = TextSecondary,
+                    modifier = Modifier.size(18.dp)
+                )
             }
         }
-        Spacer(Modifier.height(8.dp))
-        releases.forEachIndexed { index, release ->
-            if (index > 0) HorizontalDivider(color = Color(0xFF23252A))
-            Row(
-                Modifier.fillMaxWidth().padding(vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(release.versionName, color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                        if (release.versionCode == app.versionCode && (app.releaseTag == null || release.tag == app.releaseTag)) {
-                            Spacer(Modifier.width(7.dp))
-                            Text("LATEST", color = Acid, fontSize = 9.sp, fontWeight = FontWeight.Black)
-                        }
-                    }
-                    val detail = listOfNotNull(
-                        release.tag?.takeIf { it != release.versionName },
-                        release.publishedAt?.take(10),
-                        "code ${release.versionCode}"
-                    ).joinToString(" · ")
-                    Text(detail, color = Color(0xFF73757D), fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-                Spacer(Modifier.width(10.dp))
-                val signerMismatch = installed.installed && !installed.signerMatches(release)
-                val sameInstalled = installed.installed && installed.versionCode == release.versionCode && !signerMismatch
-                val action = when {
-                    sameInstalled -> "Installed"
-                    signerMismatch -> "Replace"
-                    !installed.installed -> "Install"
-                    installed.versionCode != null && installed.versionCode > release.versionCode -> "Downgrade"
-                    else -> "Update"
-                }
-                OutlinedButton(
-                    onClick = { onInstall(release) },
-                    enabled = !state.isBusy() && !sameInstalled,
-                    shape = CircleShape,
-                    contentPadding = PaddingValues(horizontal = 13.dp, vertical = 0.dp)
-                ) {
-                    Text(action, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+        HorizontalDivider(color = Color(0xFF23252A))
+        VersionRow(
+            app = app,
+            release = current,
+            installed = installed,
+            state = state,
+            onInstall = onInstall,
+            latest = true
+        )
+        if (showOlder) {
+            older.forEach { release ->
+                HorizontalDivider(color = Color(0xFF23252A))
+                VersionRow(
+                    app = app,
+                    release = release,
+                    installed = installed,
+                    state = state,
+                    onInstall = onInstall,
+                    latest = false
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun VersionRow(
+    app: AppEntry,
+    release: AppRelease,
+    installed: InstalledState,
+    state: InstallState,
+    onInstall: (AppRelease) -> Unit,
+    latest: Boolean
+) {
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(release.versionName, color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                if (latest) {
+                    Spacer(Modifier.width(7.dp))
+                    Text("LATEST", color = Acid, fontSize = 9.sp, fontWeight = FontWeight.Black)
                 }
             }
+            val detail = listOfNotNull(
+                release.tag?.takeIf { it != release.versionName },
+                release.publishedAt?.take(10),
+                "code ${release.versionCode}"
+            ).joinToString(" · ")
+            Text(detail, color = Color(0xFF73757D), fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Spacer(Modifier.width(10.dp))
+        val signerMismatch = installed.installed && !installed.signerMatches(release)
+        val sameInstalled = installed.installed && installed.versionCode == release.versionCode && !signerMismatch
+        val action = when {
+            sameInstalled -> "Installed"
+            signerMismatch -> "Replace"
+            !installed.installed -> "Install"
+            installed.versionCode != null && installed.versionCode > release.versionCode -> "Downgrade"
+            else -> "Update"
+        }
+        OutlinedButton(
+            onClick = { onInstall(release) },
+            enabled = !state.isBusy() && !sameInstalled,
+            shape = CircleShape,
+            contentPadding = PaddingValues(horizontal = 13.dp, vertical = 0.dp)
+        ) {
+            Text(action, fontSize = 10.sp, fontWeight = FontWeight.Bold)
         }
     }
 }

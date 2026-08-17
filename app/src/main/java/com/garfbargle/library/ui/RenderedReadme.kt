@@ -1,6 +1,8 @@
 package com.garfbargle.library.ui
 
+import android.content.Intent
 import android.graphics.Color as AndroidColor
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.runtime.Composable
@@ -13,7 +15,7 @@ internal fun RenderedReadme(
     repository: String?,
     modifier: Modifier = Modifier
 ) {
-    val baseUrl = repository?.let { "https://github.com/$it/" } ?: "https://github.com/"
+    val baseUrl = repository?.let { "https://github.com/$it/raw/HEAD/" } ?: "https://github.com/"
     val document = readmeHtmlDocument(html)
 
     AndroidView(
@@ -26,7 +28,18 @@ internal fun RenderedReadme(
                 settings.allowFileAccess = false
                 settings.allowContentAccess = false
                 settings.loadsImagesAutomatically = true
-                webViewClient = WebViewClient()
+                settings.blockNetworkImage = false
+                webViewClient = object : WebViewClient() {
+                    override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                        val uri = request?.url ?: return true
+                        if (uri.scheme == "http" || uri.scheme == "https") {
+                            runCatching {
+                                context.startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                            }
+                        }
+                        return true
+                    }
+                }
             }
         },
         update = { webView ->
@@ -56,7 +69,12 @@ private fun readmeHtmlDocument(content: String): String = """
             h1, h2, h3, h4, h5, h6 { color: #f4f5f7; line-height: 1.25; }
             h1, h2 { border-bottom: 1px solid #24262b; padding-bottom: 0.3em; }
             a { color: #a9ff68; }
-            img, video { max-width: 100%; height: auto; }
+            img, video {
+                display: inline-block;
+                max-width: 100%;
+                height: auto;
+                object-fit: contain;
+            }
             pre {
                 overflow-x: auto;
                 padding: 13px;
