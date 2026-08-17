@@ -83,17 +83,33 @@ def repo_side_app(token: str, repository: str, ref: str) -> dict:
     package = str(signing.get("packageName") or "").strip()
     if not PACKAGE.fullmatch(package):
         raise ValueError(f"{repository}: managedSigning.packageName is invalid")
-    branch = str(signing.get("branch") or repo.get("default_branch") or "").strip()
-    artifact = str(signing.get("artifact") or DEFAULT_ARTIFACT).strip()
+
+    branch = str(repo.get("default_branch") or "").strip()
+    if not branch:
+        raise ValueError(f"{repository}: repository has no default branch")
+    requested_branch = str(signing.get("branch") or branch).strip()
+    if requested_branch != branch:
+        raise ValueError(
+            f"{repository}: repo-side managed signing must use default branch {branch}; "
+            "use config/managed-apps.json for a custom branch"
+        )
+
+    requested_artifact = str(signing.get("artifact") or DEFAULT_ARTIFACT).strip()
+    if requested_artifact != DEFAULT_ARTIFACT:
+        raise ValueError(
+            f"{repository}: repo-side managed signing must use artifact {DEFAULT_ARTIFACT}; "
+            "use config/managed-apps.json for a custom artifact"
+        )
+
     tag_prefix = str(signing.get("tagPrefix") or DEFAULT_TAG_PREFIX).strip()
-    if not branch or not artifact or not tag_prefix:
-        raise ValueError(f"{repository}: managed signing branch/artifact/tagPrefix cannot be empty")
+    if not tag_prefix:
+        raise ValueError(f"{repository}: managedSigning.tagPrefix cannot be empty")
 
     return {
         "repository": repository,
         "packageName": package,
         "branch": branch,
-        "artifact": artifact,
+        "artifact": DEFAULT_ARTIFACT,
         "tagPrefix": tag_prefix,
     }
 
