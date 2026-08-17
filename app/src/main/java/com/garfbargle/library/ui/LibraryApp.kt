@@ -458,32 +458,57 @@ private fun LibraryScreen(
     wideLayout: Boolean
 ) {
     var query by rememberSaveable { mutableStateOf("") }
-    val visible = apps.filter {
-        query.isBlank() || it.name.contains(query, true) || it.tagline.contains(query, true) ||
+    val searching = query.isNotBlank()
+    val searchResults = apps.filter {
+        it.name.contains(query, true) || it.tagline.contains(query, true) ||
             it.category.contains(query, true) || it.developer.contains(query, true)
     }
+    val missingApps = apps
+        .filter { installed[it.packageName]?.installed != true }
+        .sortedWith(compareByDescending<AppEntry> { it.featured }.thenBy { it.name.lowercase() })
+    val ownedApps = apps
+        .filter { installed[it.packageName]?.installed == true }
+        .sortedWith(compareByDescending<AppEntry> { installed[it.packageName]?.hasUpdate(it) == true }
+            .thenByDescending { it.featured }
+            .thenBy { it.name.lowercase() })
+    val allInstalled = apps.isNotEmpty() && missingApps.isEmpty()
+    val primaryPool = if (missingApps.isNotEmpty()) missingApps else ownedApps
+    val hero = primaryPool.firstOrNull()
+    val primaryRemainder = primaryPool.drop(1)
+    val ownedExtras = if (missingApps.isNotEmpty()) ownedApps else emptyList()
 
     LazyVerticalGrid(
-        columns = if (wideLayout) GridCells.Adaptive(340.dp) else GridCells.Fixed(1),
+        columns = if (searching || !wideLayout) GridCells.Fixed(1) else GridCells.Adaptive(270.dp),
         modifier = Modifier.fillMaxSize().padding(padding),
         contentPadding = PaddingValues(
             start = if (wideLayout) 32.dp else 20.dp,
             end = if (wideLayout) 32.dp else 20.dp,
-            top = if (wideLayout) 32.dp else 54.dp,
-            bottom = 32.dp
+            top = if (wideLayout) 26.dp else 44.dp,
+            bottom = 38.dp
         ),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         item(span = { GridItemSpan(maxLineSpan) }) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "Library",
-                    color = TextPrimary,
-                    fontSize = 30.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.weight(1f)
-                )
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "Library",
+                        color = TextPrimary,
+                        fontSize = 32.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        when {
+                            searching -> "Search the full catalog."
+                            apps.isEmpty() -> "A small, trusted app catalog."
+                            allInstalled -> "Everything in the catalog is already yours."
+                            else -> "Discover apps you haven't added yet."
+                        },
+                        color = TextSecondary,
+                        fontSize = 13.sp
+                    )
+                }
                 IconButton(onClick = onRefresh) {
                     if (refreshing) CircularProgressIndicator(Modifier.size(20.dp), color = Acid, strokeWidth = 2.dp)
                     else Icon(Icons.Default.Refresh, "Refresh", tint = TextSecondary)
@@ -495,10 +520,10 @@ private fun LibraryScreen(
                 value = query,
                 onValueChange = { query = it },
                 modifier = Modifier.widthIn(max = 720.dp).fillMaxWidth(),
-                shape = RoundedCornerShape(18.dp),
+                shape = RoundedCornerShape(20.dp),
                 singleLine = true,
                 leadingIcon = { Icon(Icons.Default.Search, null) },
-                placeholder = { Text("Search apps") }
+                placeholder = { Text("Search apps, categories, developers") }
             )
         }
         warning?.let { message ->
@@ -506,23 +531,232 @@ private fun LibraryScreen(
                 Box(Modifier.widthIn(max = 960.dp).fillMaxWidth()) { Notice(message) }
             }
         }
-        if (visible.isEmpty()) {
+
+        if (searching) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                StorefrontSectionHeading(
+                    title = if (searchResults.isEmpty()) "No results" else "Results",
+                    subtitle = if (searchResults.isEmpty()) "Try a different search." else "${searchResults.size} ${if (searchResults.size == 1) "app" else "apps"}"
+                )
+            }
+            if (searchResults.isEmpty()) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    EmptyCard("No match", "Try another app name, category, or developer.")
+                }
+            } else {
+                gridItems(
+                    items = searchResults,
+                    key = { it.id },
+                    span = { GridItemSpan(maxLineSpan) }
+                ) { app ->
+                    AppCard(
+                        app,
+                        installed[app.packageName] ?: InstalledState(false),
+                        installStates[app.packageName] ?: InstallState.Idle,
+                        onOpen,
+                        onLaunch,
+                        onInstall
+                    )
+                }
+            }
+        } else if (apps.isEmpty()) {
             item(span = { GridItemSpan(maxLineSpan) }) {
                 EmptyCard(
-                    if (apps.isEmpty()) "No apps yet" else "No match",
-                    if (apps.isEmpty()) "Publish a stable GitHub Release with a standalone APK and it will appear after the next catalog refresh." else "Try another search."
+                    "No apps yet",
+                    "Publish a stable GitHub Release with a standalone APK and it will appear after the next catalog refresh."
+                )
+            }
+        } else {
+            hero?.let { app ->
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    StorefrontHero(
+                        app = app,
+                        installed = installed[app.packageName] ?: InstalledState(false),
+                        state = installStates[app.packageName] ?: InstallState.Idle,
+                        allInstalled = allInstalled,
+                        onOpen = onOpen,
+                        onLaunch = onLaunch,
+                        onInstall = onInstall
+                    )
+                }
+            }
+
+            if (primaryRemainder.isNotEmpty()) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    StorefrontSectionHeading(
+                        title = if (allInstalled) "Your collection" else "More to discover",
+                        subtitle = if (allInstalled) "Installed and ready to open." else "Picked from apps not on this device yet."
+                    )
+                }
+                gridItems(primaryRemainder, key = { it.id }) { app ->
+                    StorefrontAppCard(
+                        app = app,
+                        installed = installed[app.packageName] ?: InstalledState(false),
+                        state = installStates[app.packageName] ?: InstallState.Idle,
+                        onOpen = onOpen,
+                        onLaunch = onLaunch,
+                        onInstall = onInstall
+                    )
+                }
+            }
+
+            if (ownedExtras.isNotEmpty()) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    StorefrontSectionHeading(
+                        title = "Already yours",
+                        subtitle = "Installed apps stay close without taking over discovery."
+                    )
+                }
+                gridItems(ownedExtras, key = { "owned-${it.id}" }) { app ->
+                    StorefrontAppCard(
+                        app = app,
+                        installed = installed[app.packageName] ?: InstalledState(false),
+                        state = installStates[app.packageName] ?: InstallState.Idle,
+                        onOpen = onOpen,
+                        onLaunch = onLaunch,
+                        onInstall = onInstall
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StorefrontHero(
+    app: AppEntry,
+    installed: InstalledState,
+    state: InstallState,
+    allInstalled: Boolean,
+    onOpen: (AppEntry) -> Unit,
+    onLaunch: (AppEntry) -> Unit,
+    onInstall: (AppEntry) -> Unit
+) {
+    val accent = Color(app.accent)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(30.dp))
+            .background(accent.copy(alpha = 0.14f))
+            .clickable { onOpen(app) }
+            .padding(22.dp)
+    ) {
+        Text(
+            if (allInstalled) "IN YOUR LIBRARY" else if (app.featured) "FEATURED" else "DISCOVER",
+            color = accent,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Black,
+            letterSpacing = 1.5.sp
+        )
+        Spacer(Modifier.height(18.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            AppIcon(app, 82)
+            Spacer(Modifier.width(18.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    app.name,
+                    color = TextPrimary,
+                    fontSize = 27.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    app.tagline,
+                    color = TextSecondary,
+                    fontSize = 14.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }
-        gridItems(visible, key = { it.id }) { app ->
-            AppCard(
-                app,
-                installed[app.packageName] ?: InstalledState(false),
-                installStates[app.packageName] ?: InstallState.Idle,
-                onOpen,
-                onLaunch,
-                onInstall
+        Spacer(Modifier.height(18.dp))
+        Text(
+            app.description,
+            color = Color(0xFFC9CBD1),
+            fontSize = 13.sp,
+            lineHeight = 19.sp,
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis
+        )
+        Spacer(Modifier.height(18.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(app.category.uppercase(), color = accent, fontSize = 9.sp, fontWeight = FontWeight.Black, letterSpacing = 1.1.sp)
+                Text("by ${app.developer}", color = Color(0xFF85878E), fontSize = 11.sp)
+            }
+            InstallButton(app, installed, state, onLaunch, onInstall)
+        }
+    }
+}
+
+@Composable
+private fun StorefrontSectionHeading(title: String, subtitle: String) {
+    Column(Modifier.padding(top = 8.dp, bottom = 2.dp)) {
+        Text(title, color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Text(subtitle, color = TextSecondary, fontSize = 12.sp)
+    }
+}
+
+@Composable
+private fun StorefrontAppCard(
+    app: AppEntry,
+    installed: InstalledState,
+    state: InstallState,
+    onOpen: (AppEntry) -> Unit,
+    onLaunch: (AppEntry) -> Unit,
+    onInstall: (AppEntry) -> Unit
+) {
+    val accent = Color(app.accent)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(24.dp))
+            .background(SurfaceRaised)
+            .clickable { onOpen(app) }
+            .padding(16.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            AppIcon(app, 62)
+            Spacer(Modifier.width(13.dp))
+            Column(Modifier.weight(1f)) {
+                Text(app.category.uppercase(), color = accent, fontSize = 9.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp)
+                Text(
+                    app.name,
+                    color = TextPrimary,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+        Spacer(Modifier.height(13.dp))
+        Text(
+            app.tagline,
+            color = TextSecondary,
+            fontSize = 12.sp,
+            lineHeight = 17.sp,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+        Spacer(Modifier.height(15.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            val status = when {
+                installed.requiresReplacement(app) -> "Replace required"
+                installed.hasUpdate(app) -> "Update available"
+                installed.installed -> "Installed"
+                else -> trustLabel(app.trust)
+            }
+            Text(
+                status,
+                color = if (installed.hasUpdate(app)) accent else Color(0xFF777981),
+                fontSize = 10.sp,
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
+            InstallButton(app, installed, state, onLaunch, onInstall)
         }
     }
 }
