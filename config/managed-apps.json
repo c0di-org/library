@@ -23,13 +23,6 @@
       "tagPrefix": "android-v"
     },
     {
-      "repository": "garfbargle/Solo",
-      "packageName": "com.solo.app",
-      "branch": "main",
-      "artifact": "library-unsigned-apk",
-      "tagPrefix": "android-v"
-    },
-    {
       "repository": "garfbargle/box",
       "packageName": "dev.localagent.workstation.stock",
       "branch": "main",
