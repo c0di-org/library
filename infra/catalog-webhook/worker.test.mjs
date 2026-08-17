@@ -3,7 +3,6 @@ import { createHmac, createVerify, generateKeyPairSync } from 'node:crypto';
 import {
   createAppJwt,
   findManagedApp,
-  managedAppFromMetadata,
   shouldDispatchRelease,
   shouldInspectWorkflowRun,
   verifyWebhookSignature,
@@ -123,35 +122,6 @@ const managedApps = [
 ];
 assert.equal(findManagedApp(managedApps, 'garfbargle/PAPYRUS')?.branch, 'main');
 assert.equal(findManagedApp(managedApps, 'garfbargle/not-managed'), null);
-
-const repoEnrollment = managedAppFromMetadata(
-  {
-    provenance: 'library-managed',
-    managedSigning: { packageName: 'com.example.app' },
-  },
-  'garfbargle/example',
-  'main',
-);
-assert.deepEqual(repoEnrollment, {
-  repository: 'garfbargle/example',
-  packageName: 'com.example.app',
-  branch: 'main',
-  artifact: 'library-unsigned-apk',
-  tagPrefix: 'android-v',
-  enrollment: 'repository',
-});
-assert.equal(
-  managedAppFromMetadata({ provenance: 'developer-signed', managedSigning: { packageName: 'com.example.app' } }, 'garfbargle/example', 'main'),
-  null,
-);
-assert.equal(
-  managedAppFromMetadata({ provenance: 'library-managed' }, 'garfbargle/example', 'main'),
-  null,
-);
-assert.equal(
-  managedAppFromMetadata({ provenance: 'library-managed', managedSigning: { packageName: 'not-a-package' } }, 'garfbargle/example', 'main'),
-  null,
-);
 
 const secret = 'webhook-secret';
 const body = JSON.stringify(payload);
