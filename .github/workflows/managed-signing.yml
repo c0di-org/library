@@ -15,6 +15,10 @@ on:
         description: Source unsigned APK artifact ID
         required: false
         type: string
+      source_head_sha:
+        description: Source commit whose .library.json declares repo-side enrollment
+        required: false
+        type: string
       delivery_id:
         description: GitHub webhook delivery ID
         required: false
@@ -40,46 +44,14 @@ jobs:
       SOURCE_REPOSITORY: ${{ inputs.source_repository }}
       SOURCE_RUN_ID: ${{ inputs.source_run_id }}
       SOURCE_ARTIFACT_ID: ${{ inputs.source_artifact_id }}
+      SOURCE_HEAD_SHA: ${{ inputs.source_head_sha }}
       DELIVERY_ID: ${{ inputs.delivery_id }}
     steps:
       - uses: actions/checkout@v5
 
-      - name: Select managed app
+      - name: Resolve managed app enrollment
         id: enrollment
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          path = Path("config/managed-apps.json")
-          root = json.loads(path.read_text())
-          apps = root.get("apps", [])
-          target = os.environ.get("SOURCE_REPOSITORY", "").strip()
-
-          if target:
-              selected = [
-                  app for app in apps
-                  if str(app.get("repository", "")).lower() == target.lower()
-              ]
-              if not selected:
-                  raise SystemExit(f"requested repository is not enrolled for managed signing: {target}")
-              root["apps"] = selected
-              path.write_text(json.dumps(root, indent=2) + "\n")
-              print(
-                  "managed signing requested by "
-                  f"{target} (run {os.environ.get('SOURCE_RUN_ID') or '?'}, "
-                  f"artifact {os.environ.get('SOURCE_ARTIFACT_ID') or '?'}, "
-                  f"delivery {os.environ.get('DELIVERY_ID') or '?'})"
-              )
-          else:
-              selected = apps
-              print(f"manual managed-signing catch-up: {len(selected)} enrolled app(s)")
-
-          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-              output.write(f"enabled={'true' if selected else 'false'}\n")
-          PY
+        run: python3 scripts/resolve_managed_app.py
 
       - uses: android-actions/setup-android@v3
         if: steps.enrollment.outputs.enabled == 'true'
