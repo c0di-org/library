@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { createHmac, createVerify, generateKeyPairSync } from 'node:crypto';
-import { createAppJwt, shouldDispatchRelease, verifyWebhookSignature } from './worker.mjs';
+import {
+  createAppJwt,
+  findManagedApp,
+  shouldDispatchRelease,
+  shouldInspectWorkflowRun,
+  verifyWebhookSignature,
+} from './worker.mjs';
 
 const env = {
   SOURCE_OWNER: 'garfbargle',
@@ -12,6 +18,8 @@ const payload = {
   action: 'published',
   repository: {
     full_name: 'garfbargle/example',
+    name: 'example',
+    default_branch: 'main',
     owner: { login: 'garfbargle' },
   },
   release: {
@@ -47,7 +55,7 @@ assert.equal(
   shouldDispatchRelease(
     {
       ...payload,
-      repository: { full_name: 'elsewhere/example', owner: { login: 'elsewhere' } },
+      repository: { ...payload.repository, full_name: 'elsewhere/example', owner: { login: 'elsewhere' } },
     },
     env,
   ).dispatch,
@@ -57,13 +65,62 @@ assert.equal(
   shouldDispatchRelease(
     {
       ...payload,
-      repository: { full_name: 'garfbargle/library', owner: { login: 'garfbargle' } },
+      repository: { ...payload.repository, full_name: 'garfbargle/library', name: 'library' },
       release: { ...payload.release, tag_name: 'catalog' },
     },
     env,
   ).dispatch,
   false,
 );
+
+const workflowRunPayload = {
+  action: 'completed',
+  installation: { id: 99 },
+  repository: {
+    full_name: 'garfbargle/papyrus',
+    name: 'papyrus',
+    default_branch: 'main',
+    owner: { login: 'garfbargle' },
+  },
+  workflow_run: {
+    id: 123,
+    event: 'push',
+    head_branch: 'main',
+    conclusion: 'success',
+  },
+};
+assert.equal(shouldInspectWorkflowRun(workflowRunPayload, env).inspect, true);
+assert.equal(
+  shouldInspectWorkflowRun(
+    { ...workflowRunPayload, workflow_run: { ...workflowRunPayload.workflow_run, conclusion: 'failure' } },
+    env,
+  ).inspect,
+  false,
+);
+assert.equal(
+  shouldInspectWorkflowRun(
+    { ...workflowRunPayload, workflow_run: { ...workflowRunPayload.workflow_run, event: 'pull_request' } },
+    env,
+  ).inspect,
+  false,
+);
+assert.equal(
+  shouldInspectWorkflowRun(
+    {
+      ...workflowRunPayload,
+      repository: { ...workflowRunPayload.repository, owner: { login: 'elsewhere' } },
+    },
+    env,
+  ).inspect,
+  false,
+);
+
+const managedApps = [
+  { repository: 'garfbargle/papyrus', branch: 'main', artifact: 'library-unsigned-apk' },
+  { repository: 'garfbargle/Fiddler', branch: 'main', artifact: 'library-unsigned-apk' },
+];
+assert.equal(findManagedApp(managedApps, 'garfbargle/PAPYRUS')?.branch, 'main');
+assert.equal(findManagedApp(managedApps, 'garfbargle/not-managed'), null);
 
 const secret = 'webhook-secret';
 const body = JSON.stringify(payload);
