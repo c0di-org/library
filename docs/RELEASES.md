@@ -87,11 +87,11 @@ A successful default-branch workflow containing `library-unsigned-apk` becomes a
 - a valid `managedSigning.packageName` matching the APK;
 - the source repository to belong to the configured Library owner.
 
-`tagPrefix` defaults to `android-v`; the artifact defaults to `library-unsigned-apk`; the branch defaults to the repository default branch.
+Repo-side enrollment intentionally uses the repository's **default branch** and the exact artifact name `library-unsigned-apk`; `tagPrefix` defaults to `android-v`. If an app needs a different branch or artifact protocol, use a central hard pin instead so the webhook and signer share the same explicit configuration.
 
 ### Optional central hard pin
 
-`config/managed-apps.json` remains supported. If a repository has a central entry, that entry wins over repo-side metadata. Use this when the app repository must not be able to change its own package declaration, or for legacy/non-Tauri managed integrations.
+`config/managed-apps.json` remains supported. If a repository has a central entry, that entry wins over repo-side metadata. Use this when the app repository must not be able to change its own package declaration, when a custom branch/artifact is required, or for legacy/non-Tauri managed integrations.
 
 ```json
 {
