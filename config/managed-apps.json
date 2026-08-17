@@ -5,7 +5,8 @@
       "repository": "garfbargle/papyrus",
       "packageName": "com.papyrus.notes",
       "branch": "main",
-      "artifact": "library-unsigned-apk"
+      "artifact": "library-unsigned-apk",
+      "tagPrefix": "android-v"
     },
     {
       "repository": "garfbargle/Fiddler",
@@ -17,6 +18,13 @@
     {
       "repository": "garfbargle/gitty",
       "packageName": "app.gitty.desktop",
+      "branch": "main",
+      "artifact": "library-unsigned-apk",
+      "tagPrefix": "android-v"
+    },
+    {
+      "repository": "garfbargle/Solo",
+      "packageName": "com.solo.app",
       "branch": "main",
       "artifact": "library-unsigned-apk",
       "tagPrefix": "android-v"
