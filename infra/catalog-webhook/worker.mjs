@@ -1,7 +1,6 @@
 const API = 'https://api.github.com';
 const API_VERSION = '2022-11-28';
 const DEFAULT_MANAGED_ARTIFACT = 'library-unsigned-apk';
-const DEFAULT_MANAGED_TAG_PREFIX = 'android-v';
 const encoder = new TextEncoder();
 
 export default {
@@ -71,6 +70,16 @@ export default {
       const appJwt = await createAppJwt(env.GITHUB_APP_ID, env.GITHUB_APP_PRIVATE_KEY);
       const libraryInstallationId = await findLibraryInstallation(appJwt, env);
       const libraryToken = await createLibraryInstallationToken(appJwt, libraryInstallationId, env);
+      const managedApps = await loadManagedApps(libraryToken, env);
+      const managedApp = findManagedApp(managedApps, payload.repository.full_name);
+
+      // Centrally enrolled repositories may pin a branch/artifact. Repo-side enrollment
+      // candidates use the repository default branch and the conventional artifact name;
+      // the protected signing workflow performs the authoritative .library.json check.
+      const expectedBranch = managedApp?.branch || payload.repository.default_branch;
+      if (payload.workflow_run?.head_branch !== expectedBranch) {
+        return json({ ok: true, ignored: 'managed-build-wrong-branch' }, 202);
+      }
 
       const sourceInstallationId = payload.installation?.id;
       if (!sourceInstallationId) {
@@ -81,31 +90,7 @@ export default {
         sourceInstallationId,
         payload.repository.name,
       );
-
-      const managedApps = await loadManagedApps(libraryToken, env);
-      let managedApp = findManagedApp(managedApps, payload.repository.full_name);
-      if (!managedApp) {
-        const metadata = await loadRepositoryLibraryMetadata(
-          sourceToken,
-          payload.repository.full_name,
-          payload.workflow_run?.head_sha || payload.repository.default_branch,
-        );
-        managedApp = managedAppFromMetadata(
-          metadata,
-          payload.repository.full_name,
-          payload.repository.default_branch,
-        );
-      }
-      if (!managedApp) {
-        return json({ ok: true, ignored: 'repository-not-managed' }, 202);
-      }
-
-      const expectedBranch = managedApp.branch || payload.repository.default_branch;
-      if (payload.workflow_run?.head_branch !== expectedBranch) {
-        return json({ ok: true, ignored: 'managed-build-wrong-branch' }, 202);
-      }
-
-      const artifactName = managedApp.artifact || DEFAULT_MANAGED_ARTIFACT;
+      const artifactName = managedApp?.artifact || DEFAULT_MANAGED_ARTIFACT;
       const artifact = await findRunArtifact(
         sourceToken,
         payload.repository.full_name,
@@ -124,7 +109,7 @@ export default {
         repository: payload.repository.full_name,
         runId: payload.workflow_run.id,
         artifactId: artifact.id,
-        enrollment: managedApp.enrollment || 'central',
+        enrollment: managedApp ? 'central' : 'repository-candidate',
         delivery,
       }, 202);
     } catch (error) {
@@ -176,30 +161,6 @@ export function shouldInspectWorkflowRun(payload, env) {
 export function findManagedApp(apps, repository) {
   if (!Array.isArray(apps) || !repository) return null;
   return apps.find((app) => String(app?.repository || '').toLowerCase() === repository.toLowerCase()) || null;
-}
-
-export function managedAppFromMetadata(metadata, repository, defaultBranch) {
-  if (!metadata || metadata.provenance !== 'library-managed') return null;
-  const signing = metadata.managedSigning;
-  if (!signing || signing.enabled === false || typeof signing !== 'object') return null;
-  const packageName = String(signing.packageName || '').trim();
-  if (!/^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/.test(packageName)) return null;
-
-  const branch = String(signing.branch || defaultBranch || '').trim();
-  if (!branch) return null;
-  const artifact = String(signing.artifact || DEFAULT_MANAGED_ARTIFACT).trim();
-  if (!artifact) return null;
-  const tagPrefix = String(signing.tagPrefix || DEFAULT_MANAGED_TAG_PREFIX).trim();
-  if (!tagPrefix) return null;
-
-  return {
-    repository,
-    packageName,
-    branch,
-    artifact,
-    tagPrefix,
-    enrollment: 'repository',
-  };
 }
 
 export async function verifyWebhookSignature(secret, body, signature) {
@@ -259,7 +220,7 @@ async function createSourceInstallationToken(appJwt, installationId, repositoryN
     method: 'POST',
     body: JSON.stringify({
       repositories: [repositoryName],
-      permissions: { actions: 'read', contents: 'read' },
+      permissions: { actions: 'read' },
     }),
   });
   const data = await response.json();
@@ -283,24 +244,6 @@ async function loadManagedApps(token, env) {
   }
   const config = JSON.parse(await response.text());
   return Array.isArray(config.apps) ? config.apps : [];
-}
-
-async function loadRepositoryLibraryMetadata(token, repository, ref) {
-  const [owner, repo] = repository.split('/');
-  const response = await githubFetch(
-    `${API}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/.library.json?ref=${encodeURIComponent(ref)}`,
-    token,
-    { headers: { accept: 'application/vnd.github.raw+json' } },
-  );
-  if (response.status === 404) return null;
-  if (!response.ok) {
-    throw new Error(`could not load source .library.json (${response.status})`);
-  }
-  try {
-    return JSON.parse(await response.text());
-  } catch {
-    throw new Error('source .library.json is not valid JSON');
-  }
 }
 
 async function findRunArtifact(token, repository, runId, artifactName) {
