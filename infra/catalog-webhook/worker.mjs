@@ -72,11 +72,11 @@ export default {
       const libraryToken = await createLibraryInstallationToken(appJwt, libraryInstallationId, env);
       const managedApps = await loadManagedApps(libraryToken, env);
       const managedApp = findManagedApp(managedApps, payload.repository.full_name);
-      if (!managedApp) {
-        return json({ ok: true, ignored: 'repository-not-managed' }, 202);
-      }
 
-      const expectedBranch = managedApp.branch || payload.repository.default_branch;
+      // Centrally enrolled repositories may pin a branch/artifact. Repo-side enrollment
+      // candidates use the repository default branch and the conventional artifact name;
+      // the protected signing workflow performs the authoritative .library.json check.
+      const expectedBranch = managedApp?.branch || payload.repository.default_branch;
       if (payload.workflow_run?.head_branch !== expectedBranch) {
         return json({ ok: true, ignored: 'managed-build-wrong-branch' }, 202);
       }
@@ -90,7 +90,7 @@ export default {
         sourceInstallationId,
         payload.repository.name,
       );
-      const artifactName = managedApp.artifact || DEFAULT_MANAGED_ARTIFACT;
+      const artifactName = managedApp?.artifact || DEFAULT_MANAGED_ARTIFACT;
       const artifact = await findRunArtifact(
         sourceToken,
         payload.repository.full_name,
@@ -109,6 +109,7 @@ export default {
         repository: payload.repository.full_name,
         runId: payload.workflow_run.id,
         artifactId: artifact.id,
+        enrollment: managedApp ? 'central' : 'repository-candidate',
         delivery,
       }, 202);
     } catch (error) {
@@ -138,8 +139,6 @@ export function shouldDispatchRelease(payload, env) {
   }
   if (release.draft) return { dispatch: false, reason: 'draft-release' };
 
-  // Do not require an APK in the webhook payload. GitHub can emit the release event
-  // before release assets finish uploading; sync_github.py is the authoritative APK filter.
   return { dispatch: true, reason: 'release-change' };
 }
 
@@ -282,6 +281,7 @@ async function dispatchManagedSigningWorkflow(token, payload, artifact, delivery
       source_repository: payload.repository.full_name,
       source_run_id: String(payload.workflow_run?.id || ''),
       source_artifact_id: String(artifact.id || ''),
+      source_head_sha: String(payload.workflow_run?.head_sha || ''),
       delivery_id: delivery,
     },
     env,

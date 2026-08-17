@@ -25,21 +25,32 @@ The APK attached to the developer's GitHub Release is installed unchanged. Disco
 
 ### Library-managed
 
-An app repository may be explicitly enrolled in `config/managed-apps.json`. Its own CI produces an unsigned release APK and uploads it as a GitHub Actions artifact. Library downloads the artifact from the allowlisted repository and branch, verifies the manifest package against the package name pinned in Library, confirms the APK is unsigned, checks version monotonicity, aligns it, signs it with Library's managed-app distribution identity, verifies the final APK, and publishes a normal GitHub Release back to the source repository.
+An app repository produces an unsigned release APK and uploads it as a GitHub Actions artifact named `library-unsigned-apk`. Library validates the artifact, aligns it, signs it with Library's managed-app distribution identity, verifies the final APK, and publishes a stable GitHub Release back to the source repository.
 
-The allowlist is intentionally stored in Library rather than in the app repository. A compromise of an enrolled app repository can change its source and CI output, but cannot authorize Library to sign a different Android package without a separate change to `config/managed-apps.json`.
+Managed enrollment has two forms:
+
+1. **Repository-side enrollment (normal Tauri path).** An owned repository declares `provenance: "library-managed"` and `managedSigning.packageName` in `.library.json`. The webhook treats a successful default-branch `library-unsigned-apk` as a candidate. The protected signing workflow reads `.library.json` from the exact source commit and verifies the declared package against the APK before using the key.
+2. **Central hard pin.** `config/managed-apps.json` pins repository/package/branch/artifact in Library. Central enrollment takes precedence over repo metadata and is the stronger option when the app repository must not be able to change its own package declaration.
+
+Repo-side enrollment deliberately moves enrollment ownership into repositories controlled by the configured source owner. A compromise of such a repository can alter its own managed-signing declaration, so use the central hard-pin path for packages that need a separate authorization boundary.
 
 The managed-app distribution key is **not** the Library application key. Never use `LIBRARY_KEYSTORE_*` to sign another package.
 
 Library-managed apps currently share one distribution signing identity for operational simplicity. This increases blast radius: compromise or loss of that key affects every app enrolled in managed signing, and same-certificate apps can participate in Android signature-level trust relationships. Only enroll packages you intentionally want under this common identity.
 
-The preferred security boundary is:
+The normal Tauri boundary is:
 
 ```text
-trusted app CI -> unsigned APK artifact -> Library central allowlist + validation -> managed distribution key -> signed GitHub Release
+owned app CI -> unsigned library-unsigned-apk -> protected .library.json resolution + validation -> managed distribution key -> signed GitHub Release
 ```
 
-The signer refuses artifacts that are already signed, whose package name differs from the central allowlist, that come from the wrong branch, or whose `versionCode` does not increase when an existing APK release can be inspected.
+For a central hard pin it is:
+
+```text
+trusted app CI -> unsigned APK artifact -> Library central enrollment + validation -> managed distribution key -> signed GitHub Release
+```
+
+The signer refuses artifacts that are already signed, whose package name differs from the resolved enrollment, that come from the wrong branch, or whose `versionCode` does not increase when an existing APK release can be inspected.
 
 ## Managed distribution secrets
 
@@ -58,7 +69,7 @@ LIBRARY_DISTRIBUTION_KEY_ALIAS
 LIBRARY_DISTRIBUTION_KEY_PASSWORD
 ```
 
-`LIBRARY_GITHUB_TOKEN` additionally needs `Actions: read`, `Contents: write`, and `Metadata: read` on each repository enrolled in `config/managed-apps.json` so Library can retrieve CI artifacts and publish signed Releases. Keep the token scoped to only the repositories Library actually manages.
+`LIBRARY_GITHUB_TOKEN` needs `Actions: read`, `Contents: write`, and `Metadata: read` on repositories Library manages. Repo-side enrollment also uses that contents access to read `.library.json` from the exact source commit. Keep the token scoped to only the repositories Library intentionally manages.
 
 ## Backups
 

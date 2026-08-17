@@ -6,6 +6,10 @@
   "accent": "#7BA8FF",
   "featured": false,
   "sourceVisible": true,
-  "provenance": "developer-signed",
-  "assetPattern": "release.*\\.apk$"
+  "provenance": "library-managed",
+  "assetPattern": "release.*\\.apk$",
+  "managedSigning": {
+    "packageName": "com.example.myapp",
+    "tagPrefix": "android-v"
+  }
 }
