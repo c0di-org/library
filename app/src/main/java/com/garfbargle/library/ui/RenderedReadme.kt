@@ -15,7 +15,7 @@ internal fun RenderedReadme(
     repository: String?,
     modifier: Modifier = Modifier
 ) {
-    val baseUrl = repository?.let { "https://raw.githubusercontent.com/$it/HEAD/" } ?: "https://github.com/"
+    val baseUrl = repository?.let { "https://github.com/$it/raw/HEAD/" } ?: "https://github.com/"
     val document = readmeHtmlDocument(html)
 
     AndroidView(
