@@ -554,22 +554,24 @@ private fun AppsScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item(span = { GridItemSpan(maxLineSpan) }) {
-            Spacer(Modifier.height(8.dp))
-            Text("Apps", color = TextPrimary, fontSize = 30.sp, fontWeight = FontWeight.Bold)
-            Text("Installed on this device.", color = TextSecondary, fontSize = 13.sp)
-            Spacer(Modifier.height(12.dp))
-            FilterChip(
-                selected = updatesOnly,
-                onClick = { updatesOnly = !updatesOnly },
-                label = { Text("Updates only") },
-                leadingIcon = {
-                    Icon(
-                        if (updatesOnly) Icons.Default.CheckCircle else Icons.Default.SystemUpdate,
-                        null,
-                        modifier = Modifier.size(17.dp)
-                    )
-                }
-            )
+            Column {
+                Spacer(Modifier.height(8.dp))
+                Text("Apps", color = TextPrimary, fontSize = 30.sp, fontWeight = FontWeight.Bold)
+                Text("Installed on this device.", color = TextSecondary, fontSize = 13.sp)
+                Spacer(Modifier.height(12.dp))
+                FilterChip(
+                    selected = updatesOnly,
+                    onClick = { updatesOnly = !updatesOnly },
+                    label = { Text("Updates only") },
+                    leadingIcon = {
+                        Icon(
+                            if (updatesOnly) Icons.Default.CheckCircle else Icons.Default.SystemUpdate,
+                            null,
+                            modifier = Modifier.size(17.dp)
+                        )
+                    }
+                )
+            }
         }
         if (visible.isEmpty()) {
             item(span = { GridItemSpan(maxLineSpan) }) {
