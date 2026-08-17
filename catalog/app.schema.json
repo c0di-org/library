@@ -4,6 +4,39 @@
   "title": "Library app manifest v2",
   "type": "object",
   "required": ["id", "name", "packageName", "developer", "tagline", "description", "category", "release", "provenance"],
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "required": ["name", "sha256", "sizeBytes", "abis", "authRequired"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "downloadUrl": {"type": ["string", "null"]},
+        "apiUrl": {"type": ["string", "null"]},
+        "sha256": {"type": "string", "pattern": "^[0-9A-Fa-f]{64}$"},
+        "sizeBytes": {"type": "integer", "minimum": 0},
+        "abis": {"type": "array", "items": {"type": "string"}},
+        "authRequired": {"type": "boolean"}
+      },
+      "additionalProperties": true
+    },
+    "installableRelease": {
+      "type": "object",
+      "required": ["versionName", "versionCode", "minSdk", "targetSdk", "artifacts"],
+      "properties": {
+        "tag": {"type": ["string", "null"]},
+        "versionName": {"type": "string"},
+        "versionCode": {"type": "integer", "minimum": 0},
+        "minSdk": {"type": "integer", "minimum": 1},
+        "targetSdk": {"type": "integer", "minimum": 1},
+        "publishedAt": {"type": ["string", "null"]},
+        "releaseUrl": {"type": ["string", "null"]},
+        "signingCertSha256": {"type": ["string", "null"], "pattern": "^[0-9A-Fa-f:]{64,95}$"},
+        "artifacts": {"type": "array", "items": {"$ref": "#/$defs/artifact"}},
+        "changelog": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": true
+    }
+  },
   "properties": {
     "id": {"type": "string", "minLength": 1},
     "name": {"type": "string", "minLength": 1},
@@ -26,7 +59,8 @@
     "visibility": {"enum": ["public", "private"]},
     "repository": {"type": ["string", "null"]},
     "sourceUrl": {"type": ["string", "null"]},
-    "release": {"type": "object", "required": ["versionName", "versionCode", "minSdk", "targetSdk", "artifacts"]},
+    "release": {"$ref": "#/$defs/installableRelease"},
+    "releases": {"type": "array", "items": {"$ref": "#/$defs/installableRelease"}},
     "provenance": {"type": "object", "required": ["kind"]},
     "changelog": {"type": "array", "items": {"type": "string"}},
     "history": {"type": "array"}

@@ -107,14 +107,12 @@ class CatalogRepository(
     }
 
     private fun JSONObject.toAppEntry(schemaVersion: Int): AppEntry {
-        val release = optJSONObject("release") ?: JSONObject()
+        val releaseJson = optJSONObject("release") ?: JSONObject()
         val provenance = optJSONObject("provenance") ?: JSONObject()
         val iconJson = optJSONObject("icon")
         val changelogJson = optJSONArray("changelog") ?: JSONArray()
         val historyJson = optJSONArray("history") ?: JSONArray()
-        val changelog = buildList {
-            for (index in 0 until changelogJson.length()) add(changelogJson.optString(index))
-        }.filter { it.isNotBlank() }
+        val changelog = changelogJson.toStrings()
         val history = buildList {
             for (index in 0 until historyJson.length()) {
                 val item = historyJson.optJSONObject(index) ?: continue
@@ -149,32 +147,27 @@ class CatalogRepository(
             val rgb = accentString.toLong(16)
             if (accentString.length == 6) 0xFF000000L or rgb else rgb
         }.getOrDefault(0xFFA9FF68L)
-
-        val artifacts = if (schemaVersion >= 2) {
-            release.optJSONArray("artifacts").toArtifacts(visibility)
-        } else {
-            listOfNotNull(
-                release.optNullableString("apkUrl")?.let { url ->
-                    Artifact(
-                        name = url.substringAfterLast('/'),
-                        downloadUrl = url,
-                        apiUrl = null,
-                        sha256 = release.optString("sha256"),
-                        sizeBytes = release.optLong("sizeBytes", 0),
-                        abis = emptyList(),
-                        authRequired = visibility == AppVisibility.PRIVATE
+        val currentSigner = provenance.optNullableString("signingCertSha256")
+        val currentRelease = releaseJson.toAppRelease(
+            schemaVersion = schemaVersion,
+            visibility = visibility,
+            fallbackSigner = currentSigner,
+            fallbackChangelog = changelog
+        )
+        val releasesJson = optJSONArray("releases") ?: JSONArray()
+        val releases = buildList {
+            for (index in 0 until releasesJson.length()) {
+                val item = releasesJson.optJSONObject(index) ?: continue
+                add(
+                    item.toAppRelease(
+                        schemaVersion = schemaVersion,
+                        visibility = visibility,
+                        fallbackSigner = currentSigner,
+                        fallbackChangelog = emptyList()
                     )
-                }
-            )
-        }
-
-        if (schemaVersion >= 2 && artifacts.isNotEmpty()) {
-            require(artifacts.all { it.sha256.length == 64 }) { "Installable catalog entries must pin every APK SHA-256." }
-            require(!provenance.optNullableString("signingCertSha256").isNullOrBlank()) {
-                "Installable catalog entries must pin a signing certificate."
+                )
             }
-            require(release.optLong("versionCode", 0) > 0L) { "Installable catalog entries need a positive versionCode." }
-        }
+        }.distinctBy { it.versionCode to it.tag }
 
         return AppEntry(
             id = getString("id"),
@@ -184,24 +177,71 @@ class CatalogRepository(
             tagline = optString("tagline", ""),
             description = optString("description", ""),
             icon = icon,
-            versionName = release.optString("versionName", "0"),
-            versionCode = release.optLong("versionCode", 0),
+            versionName = currentRelease.versionName,
+            versionCode = currentRelease.versionCode,
             category = optString("category", "Apps"),
-            minSdk = release.optInt("minSdk", 28),
-            targetSdk = release.optInt("targetSdk", 36),
+            minSdk = currentRelease.minSdk,
+            targetSdk = currentRelease.targetSdk,
             featured = optBoolean("featured", false),
             accent = accent,
             trust = trust,
             visibility = visibility,
             repository = optNullableString("repository"),
             sourceUrl = optNullableString("sourceUrl"),
-            releaseUrl = release.optNullableString("releaseUrl"),
-            releaseTag = release.optNullableString("tag"),
-            publishedAt = release.optNullableString("publishedAt"),
-            signingCertSha256 = provenance.optNullableString("signingCertSha256"),
-            artifacts = artifacts,
+            releaseUrl = currentRelease.releaseUrl,
+            releaseTag = currentRelease.tag,
+            publishedAt = currentRelease.publishedAt,
+            signingCertSha256 = currentRelease.signingCertSha256,
+            artifacts = currentRelease.artifacts,
             changelog = changelog,
-            history = history
+            history = history,
+            releases = releases
+        )
+    }
+
+    private fun JSONObject.toAppRelease(
+        schemaVersion: Int,
+        visibility: AppVisibility,
+        fallbackSigner: String?,
+        fallbackChangelog: List<String>
+    ): AppRelease {
+        val artifacts = if (schemaVersion >= 2) {
+            optJSONArray("artifacts").toArtifacts(visibility)
+        } else {
+            listOfNotNull(
+                optNullableString("apkUrl")?.let { url ->
+                    Artifact(
+                        name = url.substringAfterLast('/'),
+                        downloadUrl = url,
+                        apiUrl = null,
+                        sha256 = optString("sha256"),
+                        sizeBytes = optLong("sizeBytes", 0),
+                        abis = emptyList(),
+                        authRequired = visibility == AppVisibility.PRIVATE
+                    )
+                }
+            )
+        }
+        val signer = optNullableString("signingCertSha256") ?: fallbackSigner
+        val releaseChangelog = optJSONArray("changelog")?.toStrings().orEmpty().ifEmpty { fallbackChangelog }
+
+        if (schemaVersion >= 2 && artifacts.isNotEmpty()) {
+            require(artifacts.all { it.sha256.length == 64 }) { "Installable catalog releases must pin every APK SHA-256." }
+            require(!signer.isNullOrBlank()) { "Installable catalog releases must pin a signing certificate." }
+            require(optLong("versionCode", 0) > 0L) { "Installable catalog releases need a positive versionCode." }
+        }
+
+        return AppRelease(
+            tag = optNullableString("tag"),
+            versionName = optString("versionName", "0"),
+            versionCode = optLong("versionCode", 0),
+            minSdk = optInt("minSdk", 28),
+            targetSdk = optInt("targetSdk", 36),
+            publishedAt = optNullableString("publishedAt"),
+            releaseUrl = optNullableString("releaseUrl"),
+            signingCertSha256 = signer,
+            artifacts = artifacts,
+            changelog = releaseChangelog
         )
     }
 
@@ -230,6 +270,10 @@ class CatalogRepository(
             }
         }
     }
+
+    private fun JSONArray.toStrings(): List<String> = buildList {
+        for (index in 0 until length()) add(optString(index))
+    }.filter { it.isNotBlank() }
 
     private fun JSONObject.optNullableString(key: String): String? =
         optString(key).takeIf { it.isNotBlank() && it != "null" }

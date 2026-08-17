@@ -15,6 +15,21 @@ def fail(message: str) -> None:
     raise SystemExit(message)
 
 
+def validate_release(app_id: str, release: dict, signer: str | None, label: str) -> None:
+    version_code = int(release.get("versionCode", -1))
+    if version_code < 0:
+        fail(f"{app_id}: {label} has invalid versionCode")
+    artifacts = release.get("artifacts", [])
+    for artifact in artifacts:
+        digest = artifact.get("sha256", "")
+        if len(digest) != 64:
+            fail(f"{app_id}: {label} artifact {artifact.get('name')} has invalid SHA-256")
+        if not artifact.get("apiUrl") and not artifact.get("downloadUrl"):
+            fail(f"{app_id}: {label} artifact {artifact.get('name')} has no download URL")
+    if artifacts and (not signer or len(signer.replace(":", "")) != 64):
+        fail(f"{app_id}: {label} must pin a signing certificate")
+
+
 def main() -> None:
     path = Path(sys.argv[1] if len(sys.argv) > 1 else "catalog/library.json")
     root = json.loads(path.read_text())
@@ -43,19 +58,25 @@ def main() -> None:
             if not icon_bytes or len(icon_bytes) > MAX_ICON_BYTES:
                 fail(f"{app_id}: icon must be between 1 byte and {MAX_ICON_BYTES} bytes")
 
-        release = app.get("release", {})
-        if int(release.get("versionCode", -1)) < 0:
-            fail(f"{app_id}: invalid versionCode")
-        artifacts = release.get("artifacts", [])
-        for artifact in artifacts:
-            digest = artifact.get("sha256", "")
-            if len(digest) != 64:
-                fail(f"{app_id}: artifact {artifact.get('name')} has invalid SHA-256")
-            if not artifact.get("apiUrl") and not artifact.get("downloadUrl"):
-                fail(f"{app_id}: artifact {artifact.get('name')} has no download URL")
-        signer = app.get("provenance", {}).get("signingCertSha256")
-        if artifacts and (not signer or len(signer.replace(":", "")) != 64):
-            fail(f"{app_id}: installable release must pin a signing certificate")
+        current_signer = app.get("provenance", {}).get("signingCertSha256")
+        current = app.get("release", {})
+        validate_release(app_id, current, current_signer, "current release")
+
+        seen_versions: set[tuple[int, str | None]] = set()
+        releases = app.get("releases", [])
+        for index, release in enumerate(releases):
+            signer = release.get("signingCertSha256") or current_signer
+            validate_release(app_id, release, signer, f"release #{index + 1}")
+            key = (int(release.get("versionCode", -1)), release.get("tag"))
+            if key in seen_versions:
+                fail(f"{app_id}: duplicate installable release {key[1] or key[0]}")
+            seen_versions.add(key)
+
+        if releases:
+            current_key = (int(current.get("versionCode", -1)), current.get("tag"))
+            if current_key not in seen_versions:
+                fail(f"{app_id}: releases must include the current release")
+
     print(f"catalog OK: {len(ids)} apps")
 
 
