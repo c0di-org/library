@@ -87,6 +87,35 @@ def sha256(path: Path):
     return digest.hexdigest()
 
 
+def _read_icon(apk: zipfile.ZipFile, resource: str, mime_types: dict[str, str]):
+    mime_type = mime_types.get(Path(resource).suffix.lower())
+    if not mime_type:
+        return None
+    try:
+        with apk.open(resource) as source:
+            data = source.read(MAX_ICON_BYTES + 1)
+    except KeyError:
+        return None
+    if not data or len(data) > MAX_ICON_BYTES:
+        return None
+    return {
+        "mimeType": mime_type,
+        "dataBase64": base64.b64encode(data).decode("ascii"),
+    }
+
+
+def _density_score(resource: str) -> int:
+    scores = {
+        "xxxhdpi": 6,
+        "xxhdpi": 5,
+        "xhdpi": 4,
+        "hdpi": 3,
+        "mdpi": 2,
+        "ldpi": 1,
+    }
+    return next((score for density, score in scores.items() if density in resource), 0)
+
+
 def extract_icon(path: Path, badging: str):
     candidates = [(int(size), resource) for size, resource in ICON.findall(badging)]
     fallback = ICON_FALLBACK.search(badging)
@@ -100,21 +129,32 @@ def extract_icon(path: Path, badging: str):
         ".jpeg": "image/jpeg",
     }
     with zipfile.ZipFile(path) as apk:
+        # Prefer the exact raster resources reported by aapt2.
         for _, resource in sorted(candidates, reverse=True):
-            mime_type = mime_types.get(Path(resource).suffix.lower())
-            if not mime_type:
-                continue
-            try:
-                with apk.open(resource) as source:
-                    data = source.read(MAX_ICON_BYTES + 1)
-            except KeyError:
-                continue
-            if not data or len(data) > MAX_ICON_BYTES:
-                continue
-            return {
-                "mimeType": mime_type,
-                "dataBase64": base64.b64encode(data).decode("ascii"),
-            }
+            icon = _read_icon(apk, resource, mime_types)
+            if icon:
+                return icon
+
+        # Modern adaptive launchers are often reported as XML from mipmap-anydpi-v26.
+        # The same resource name normally has a legacy raster fallback in a density
+        # directory. Find that raster so the catalog can still embed a real app icon.
+        stems = {Path(resource).stem for _, resource in candidates}
+        stems.update({"ic_launcher", "ic_launcher_round"})
+        raster_fallbacks = [
+            name
+            for name in apk.namelist()
+            if Path(name).suffix.lower() in mime_types
+            and Path(name).stem in stems
+            and name.startswith("res/")
+        ]
+        raster_fallbacks.sort(
+            key=lambda name: (_density_score(name), -len(name)),
+            reverse=True,
+        )
+        for resource in raster_fallbacks:
+            icon = _read_icon(apk, resource, mime_types)
+            if icon:
+                return icon
     return None
 
 
@@ -173,10 +213,6 @@ def repos(gh: GitHub, owner: str):
         f"{API}/users/{urllib.parse.quote(owner)}/repos?per_page=100&page={page}&sort=updated"
     )
 
-    # Prefer anonymous public discovery so a fine-grained token limited to selected
-    # repositories cannot hide unrelated public apps. GitHub-hosted runner IPs can
-    # exhaust the shared anonymous API quota, though, so retry the same public endpoint
-    # with the configured token and continue with authenticated-visible repos if needed.
     try:
         public = _paged(gh, public_url, authenticated=False)
     except urllib.error.HTTPError as exc:
@@ -194,8 +230,6 @@ def repos(gh: GitHub, owner: str):
 
     merged = {repo["full_name"]: repo for repo in public}
 
-    # A fine-grained PAT can add selected private repos. The built-in GITHUB_TOKEN
-    # normally contributes only this repository; that's still useful for self-updates.
     if gh.token:
         try:
             private_and_visible = _paged(
@@ -222,6 +256,26 @@ def write(path: Path, data: dict):
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
 
 
+def release_notes(body: str) -> list[str]:
+    notes = []
+    for raw in body.splitlines():
+        line = raw.strip()
+        line = re.sub(r"^#{1,6}\s*", "", line)
+        line = re.sub(r"^[-*+]\s+", "", line)
+        line = line.strip()
+        if not line:
+            continue
+        lowered = line.lower().strip(":")
+        if lowered in {"what's changed", "whats changed", "changes", "changelog"}:
+            continue
+        if lowered.startswith("**full changelog**") or lowered.startswith("full changelog"):
+            continue
+        notes.append(line)
+        if len(notes) == 8:
+            break
+    return notes
+
+
 def build(gh: GitHub, repo: dict, release: dict, history: list, meta: dict, aapt2: str, apksigner: str):
     assets = [asset for asset in release.get("assets", []) if asset.get("name", "").lower().endswith(".apk")]
     inspected = []
@@ -246,7 +300,7 @@ def build(gh: GitHub, repo: dict, release: dict, history: list, meta: dict, aapt
         raise ValueError("release APKs disagree on package/version/signer")
 
     private = bool(repo.get("private"))
-    changelog = [line.strip(" -*\t") for line in (release.get("body") or "").splitlines() if line.strip()][:8]
+    changelog = release_notes(release.get("body") or "")
     changelog = changelog or [f"Release {release.get('tag_name', '')}"]
     icon = next((item[1].get("icon") for item in inspected if item[1].get("icon")), None)
     return {
