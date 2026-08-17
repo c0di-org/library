@@ -48,4 +48,4 @@ python3 scripts/build_catalog.py
 
 ## Docs
 
-[Releases](docs/RELEASES.md) · [Signing](docs/SIGNING.md) · [Architecture](docs/ARCHITECTURE.md)
+[Releases](docs/RELEASES.md) · [Signing](docs/SIGNING.md) · [GitHub App](docs/GITHUB_APP.md) · [Architecture](docs/ARCHITECTURE.md)
