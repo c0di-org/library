@@ -97,6 +97,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.graphics.drawable.toBitmap
 import com.garfbargle.library.BuildConfig
+import com.garfbargle.library.auth.GitHubAuthSession
 import com.garfbargle.library.auth.GitHubTokenStore
 import com.garfbargle.library.data.AppEntry
 import com.garfbargle.library.data.AppRelease
@@ -253,8 +254,8 @@ fun LibraryApp() {
             onLaunch = { openApp(context, it.packageName) },
             onRefresh = { refreshKey++ },
             onInstall = { requestInstall(it) },
-            onSaveToken = {
-                tokenStore.saveToken(it)
+            onAuthorizeGitHub = { session ->
+                tokenStore.saveSession(session)
                 hasToken = true
                 refreshKey++
             },
@@ -306,7 +307,7 @@ private fun MainShell(
     onLaunch: (AppEntry) -> Unit,
     onRefresh: () -> Unit,
     onInstall: (AppEntry) -> Unit,
-    onSaveToken: (String) -> Unit,
+    onAuthorizeGitHub: (GitHubAuthSession) -> Unit,
     onClearToken: () -> Unit
 ) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -382,7 +383,7 @@ private fun MainShell(
                             Tab.SETTINGS -> SettingsScreen(
                                 hasToken,
                                 load.warning,
-                                onSaveToken,
+                                onAuthorizeGitHub,
                                 onClearToken,
                                 onRefresh,
                                 padding,
@@ -1169,13 +1170,12 @@ private fun SectionCard(title: String, content: @Composable () -> Unit) {
 private fun SettingsScreen(
     hasToken: Boolean,
     warning: String?,
-    onSave: (String) -> Unit,
+    onAuthorize: (GitHubAuthSession) -> Unit,
     onClear: () -> Unit,
     onRefresh: () -> Unit,
     padding: PaddingValues,
     wideLayout: Boolean
 ) {
-    var token by remember { mutableStateOf("") }
     BoxWithConstraints(Modifier.fillMaxSize().padding(padding)) {
         val sidePadding = if (wideLayout) {
             ((maxWidth - 760.dp) / 2f).coerceAtLeast(32.dp)
@@ -1187,73 +1187,46 @@ private fun SettingsScreen(
             contentPadding = PaddingValues(start = sidePadding, end = sidePadding, top = 20.dp, bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-        item {
-            Spacer(Modifier.height(8.dp))
-            Text("Settings", color = TextPrimary, fontSize = 30.sp, fontWeight = FontWeight.Bold)
-            Text("Private access stays on this device.", color = TextSecondary)
-        }
-        item {
-            SectionCard("GitHub") {
-                Text(
-                    if (hasToken) "Connected for private repositories and release assets." else "Connect a fine-grained token with read access to the private repositories you want in Library.",
-                    color = TextSecondary,
-                    fontSize = 13.sp
-                )
-                Spacer(Modifier.height(12.dp))
-                if (!hasToken) {
-                    OutlinedTextField(
-                        value = token,
-                        onValueChange = { token = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("GitHub token") },
-                        singleLine = true,
-                        visualTransformation = PasswordVisualTransformation()
+            item {
+                Spacer(Modifier.height(8.dp))
+                Text("Settings", color = TextPrimary, fontSize = 30.sp, fontWeight = FontWeight.Bold)
+                Text("GitHub App access stays on this device.", color = TextSecondary)
+            }
+            item {
+                SectionCard("GitHub") {
+                    GitHubAuthContent(
+                        connected = hasToken,
+                        clientId = BuildConfig.GITHUB_APP_CLIENT_ID,
+                        onAuthorized = onAuthorize,
+                        onClear = onClear
                     )
-                    Spacer(Modifier.height(10.dp))
-                    Button(
-                        onClick = { if (token.isNotBlank()) { onSave(token); token = "" } },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(16.dp)
-                    ) { Text("Connect GitHub") }
-                } else {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.CheckCircle, null, tint = Acid)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Stored with Android Keystore", color = TextPrimary, fontSize = 12.sp)
+                }
+            }
+            item {
+                SectionCard("Catalog") {
+                    Text(BuildConfig.CATALOG_REPOSITORY, color = TextSecondary, fontSize = 12.sp)
+                    Text("Public catalog · no sign-in required", color = Color(0xFF777A82), fontSize = 10.sp)
+                    warning?.let {
+                        Spacer(Modifier.height(8.dp))
+                        Text(it, color = MaterialTheme.colorScheme.error, fontSize = 11.sp)
                     }
                     Spacer(Modifier.height(12.dp))
-                    Button(
-                        onClick = onClear,
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF292B30)),
-                        modifier = Modifier.fillMaxWidth()
-                    ) { Text("Disconnect") }
+                    Button(onClick = onRefresh, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
+                        Icon(Icons.Default.Refresh, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Refresh")
+                    }
                 }
             }
-        }
-        item {
-            SectionCard("Catalog") {
-                Text(BuildConfig.CATALOG_REPOSITORY, color = TextSecondary, fontSize = 12.sp)
-                warning?.let {
-                    Spacer(Modifier.height(8.dp))
-                    Text(it, color = MaterialTheme.colorScheme.error, fontSize = 11.sp)
-                }
-                Spacer(Modifier.height(12.dp))
-                Button(onClick = onRefresh, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
-                    Icon(Icons.Default.Refresh, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Refresh")
+            item {
+                SectionCard("Library ${BuildConfig.VERSION_NAME}") {
+                    Text(
+                        "Library verifies every APK before installation and keeps each app's signing identity intact.",
+                        color = TextSecondary,
+                        fontSize = 13.sp
+                    )
                 }
             }
-        }
-        item {
-            SectionCard("Library ${BuildConfig.VERSION_NAME}") {
-                Text(
-                    "Library verifies every APK before installation and keeps each app's signing identity intact.",
-                    color = TextSecondary,
-                    fontSize = 13.sp
-                )
-            }
-        }
         }
     }
 }
