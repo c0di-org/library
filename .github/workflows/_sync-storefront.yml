@@ -1,0 +1,29 @@
+name: Sync storefront PR
+
+on:
+  push:
+    branches:
+      - design/library-storefront
+    paths:
+      - .github/workflows/_sync-storefront.yml
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: design/library-storefront
+          fetch-depth: 0
+      - name: Merge main into storefront branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git merge --no-edit origin/main
+          git push origin HEAD:design/library-storefront
