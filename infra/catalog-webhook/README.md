@@ -1,108 +1,92 @@
-# Library Catalog GitHub App
+# Library automation GitHub App
 
-This Worker turns GitHub release webhooks into immediate Library catalog refreshes. It is intentionally stateless: GitHub remains the source of truth, and the existing scheduled catalog refresh remains the fallback.
+This Worker turns GitHub events into immediate Library automation. It is intentionally stateless: GitHub remains the source of truth.
 
-> Enable the live webhook only after the PR containing this integration is merged to `main`. The Worker dispatches inputs that must already exist in the default-branch version of `catalog.yml`.
+It handles two paths:
 
-## What it does
+- published release activity → refresh the Library catalog
+- successful managed-app build with a `library-unsigned-apk` artifact → run managed APK signing for that app only
 
-1. GitHub sends a `release` webhook for repositories where the Library Catalog GitHub App is installed.
-2. The Worker verifies `X-Hub-Signature-256` using the GitHub App webhook secret.
-3. Draft releases are ignored. Any non-draft release activity triggers a refresh; the Worker intentionally does not require an APK to already appear in the webhook payload because GitHub can deliver the release event before asset uploads finish. Release removals also trigger a refresh so the catalog can fall back to the previous valid release.
-4. The Worker signs a short-lived GitHub App JWT, finds the App installation for `garfbargle/library`, and mints an installation token scoped to the `library` repository with only `Actions: write`.
-5. The Worker dispatches `.github/workflows/catalog.yml` with the source repository, release ID/tag, and webhook delivery ID.
-6. `catalog.yml` performs the normal full reconciliation, where `sync_github.py` remains the authoritative APK filter. Its six-hour schedule remains enabled as a safety net.
+The catalog's existing six-hour schedule remains as a safety net. Managed APK signing is event-driven and no longer needs an hourly polling schedule.
 
-The rolling `catalog` release in `garfbargle/library` is explicitly ignored to prevent a feedback loop.
+## Event flow
 
-## One-time setup
+### Catalog refresh
 
-### 1. Deploy the Worker once to get its URL
+1. GitHub sends a `release` webhook for repositories where the App is installed.
+2. The Worker verifies `X-Hub-Signature-256`.
+3. Draft releases are ignored, and Library's rolling `catalog` release is ignored to prevent a feedback loop.
+4. The Worker mints a short-lived installation token scoped to `garfbargle/library` and dispatches `.github/workflows/catalog.yml`.
+5. `catalog.yml` performs the normal full reconciliation; `sync_github.py` remains the authoritative APK filter.
 
-After this integration is merged, from this directory:
+### Managed APK signing
 
-```bash
-npx wrangler@latest deploy
-```
+1. GitHub sends a completed `workflow_run` webhook.
+2. The Worker ignores failed runs, pull-request runs, repos outside `SOURCE_OWNER`, and repos not listed in `config/managed-apps.json`.
+3. For an enrolled repo, the Worker verifies the run is on the configured branch.
+4. It mints a short-lived token scoped to that source repo with `Actions: read` and checks that the completed run actually contains the configured `library-unsigned-apk` artifact.
+5. Only then does it dispatch `.github/workflows/managed-signing.yml`, passing the source repository/run/artifact IDs.
+6. The signing workflow narrows `config/managed-apps.json` to that one app, signs/publishes it, and exits. A manual workflow dispatch with no source repository still provides an explicit catch-up path across all enrolled apps.
+7. Publishing the signed release naturally emits the Release webhook, which then refreshes the catalog.
 
-Copy the resulting `workers.dev` URL. A normal `GET` returns a small health response even before secrets are configured.
+This means normal successful workflows do not start signing jobs, and idle periods consume no managed-signing runners.
 
-### 2. Create the GitHub App
+## GitHub App setup
 
-Create a new GitHub App named **Library Catalog** under the account that owns the participating repositories.
-
-Use the Worker URL as the webhook URL and generate a strong webhook secret, for example:
-
-```bash
-openssl rand -hex 32
-```
+Use the deployed Worker URL as the GitHub App webhook URL.
 
 Repository permissions:
 
-- **Contents: Read-only** — required for Release webhook events.
-- **Actions: Read and write** — used only to dispatch the Library catalog workflow.
+- **Contents: Read-only** — release events and reading `config/managed-apps.json`
+- **Actions: Read and write** — reading source workflow artifacts and dispatching Library workflows
 
-Subscribe to the **Release** repository event. The Worker additionally restricts source events to `SOURCE_OWNER` and mints the runtime installation token for the Library repository only.
+Subscribe to both repository events:
 
-Generate a private key for the App, then install the App for **All repositories** on the account. This is what removes per-repository secrets/workflows and automatically covers new repositories.
+- **Release**
+- **Workflow run**
 
-### 3. Add Worker secrets
+Install the App for **All repositories** on the account so new repositories require no copied token, secret, or notification workflow. Repositories only participate in managed signing when they are explicitly enrolled in `config/managed-apps.json`.
 
-Set the same webhook secret used in the GitHub App settings:
+If the App was originally configured only for Release events, simply enable **Workflow run** in the GitHub App settings. The existing permissions are already sufficient.
 
-```bash
-npx wrangler@latest secret put GITHUB_WEBHOOK_SECRET
-```
+## Worker secrets
 
-Set the GitHub App ID:
-
-```bash
-npx wrangler@latest secret put GITHUB_APP_ID
-```
-
-Store the entire generated GitHub App private-key PEM:
-
-```bash
-npx wrangler@latest secret put GITHUB_APP_PRIVATE_KEY < path/to/github-app.private-key.pem
-```
-
-The Worker accepts GitHub-generated `-----BEGIN RSA PRIVATE KEY-----` keys as well as PKCS#8 `-----BEGIN PRIVATE KEY-----` keys.
-
-### 4. Verify delivery
-
-In the GitHub App settings, use the webhook delivery page to redeliver the `ping`, or publish a release in an installed repository.
-
-Expected behavior:
-
-- `ping` → HTTP 200
-- unrelated event → HTTP 202, ignored
-- draft release → HTTP 202, ignored
-- non-draft release → HTTP 202 with `"dispatched": true`, followed by a **Refresh Catalog** workflow run in `garfbargle/library`
-
-The resulting catalog may remain unchanged when the release contains no usable APK; that decision belongs to the normal catalog sync.
-
-## Configuration
-
-Non-secret settings live in `wrangler.toml`:
-
-- `SOURCE_OWNER` — only release events from this owner may trigger catalog refreshes.
-- `LIBRARY_OWNER` / `LIBRARY_REPO` — destination repository.
-- `LIBRARY_WORKFLOW` — workflow filename to dispatch.
-- `LIBRARY_REF` — ref used for `workflow_dispatch`.
-
-Required Worker secrets:
+Required secrets:
 
 - `GITHUB_WEBHOOK_SECRET`
 - `GITHUB_APP_ID`
 - `GITHUB_APP_PRIVATE_KEY`
 
-## Local validation
+The Worker accepts GitHub-generated `-----BEGIN RSA PRIVATE KEY-----` keys as well as PKCS#8 `-----BEGIN PRIVATE KEY-----` keys.
 
-No npm install is required:
+## Configuration
+
+Non-secret settings live in `wrangler.toml`:
+
+- `SOURCE_OWNER` — only events from this owner are considered
+- `LIBRARY_OWNER` / `LIBRARY_REPO` — destination repository
+- `LIBRARY_WORKFLOW` — catalog workflow filename
+- `MANAGED_SIGNING_WORKFLOW` — managed-signing workflow filename
+- `LIBRARY_REF` — ref used for `workflow_dispatch` and managed-app config lookup
+
+## Verification
+
+Expected webhook behavior:
+
+- `ping` → HTTP 200
+- unrelated event → HTTP 202, ignored
+- draft release → HTTP 202, ignored
+- non-draft release → HTTP 202 with a catalog dispatch
+- unsuccessful or pull-request workflow run → HTTP 202, ignored
+- successful workflow run in an unmanaged repo → HTTP 202, ignored
+- successful managed workflow without the expected artifact → HTTP 202, ignored
+- successful enrolled build with `library-unsigned-apk` → HTTP 202 with a managed-signing dispatch
+
+No npm install is required for local validation:
 
 ```bash
 node --check worker.mjs
 node worker.test.mjs
 ```
 
-The tests cover release filtering, the release/asset upload race, HMAC verification, GitHub-style RSA private-key handling, JWT signing, and signature verification.
+CI runs the Worker tests alongside the repository's existing helper-script, catalog, lint, unit-test, and APK build validation.

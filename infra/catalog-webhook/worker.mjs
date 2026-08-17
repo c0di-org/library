@@ -1,5 +1,6 @@
 const API = 'https://api.github.com';
 const API_VERSION = '2022-11-28';
+const DEFAULT_MANAGED_ARTIFACT = 'library-unsigned-apk';
 const encoder = new TextEncoder();
 
 export default {
@@ -24,7 +25,7 @@ export default {
     if (event === 'ping') {
       return json({ ok: true, pong: true }, 200);
     }
-    if (event !== 'release') {
+    if (event !== 'release' && event !== 'workflow_run') {
       return json({ ok: true, ignored: `event:${event || 'unknown'}` }, 202);
     }
 
@@ -35,25 +36,83 @@ export default {
       return json({ error: 'invalid JSON payload' }, 400);
     }
 
-    const decision = shouldDispatchRelease(payload, env);
-    if (!decision.dispatch) {
-      return json({ ok: true, ignored: decision.reason }, 202);
+    if (event === 'release') {
+      const decision = shouldDispatchRelease(payload, env);
+      if (!decision.dispatch) {
+        return json({ ok: true, ignored: decision.reason }, 202);
+      }
+
+      try {
+        const appJwt = await createAppJwt(env.GITHUB_APP_ID, env.GITHUB_APP_PRIVATE_KEY);
+        const installationId = await findLibraryInstallation(appJwt, env);
+        const libraryToken = await createLibraryInstallationToken(appJwt, installationId, env);
+        await dispatchCatalogWorkflow(libraryToken, payload, delivery, env);
+        return json({
+          ok: true,
+          dispatched: true,
+          workflow: env.LIBRARY_WORKFLOW || 'catalog.yml',
+          repository: payload.repository.full_name,
+          tag: payload.release?.tag_name || null,
+          delivery,
+        }, 202);
+      } catch (error) {
+        console.error('catalog dispatch failed', error);
+        return json({ error: error instanceof Error ? error.message : String(error) }, 502);
+      }
+    }
+
+    const candidate = shouldInspectWorkflowRun(payload, env);
+    if (!candidate.inspect) {
+      return json({ ok: true, ignored: candidate.reason }, 202);
     }
 
     try {
       const appJwt = await createAppJwt(env.GITHUB_APP_ID, env.GITHUB_APP_PRIVATE_KEY);
-      const installationId = await findLibraryInstallation(appJwt, env);
-      const installationToken = await createLibraryInstallationToken(appJwt, installationId, env);
-      await dispatchCatalogWorkflow(installationToken, payload, delivery, env);
+      const libraryInstallationId = await findLibraryInstallation(appJwt, env);
+      const libraryToken = await createLibraryInstallationToken(appJwt, libraryInstallationId, env);
+      const managedApps = await loadManagedApps(libraryToken, env);
+      const managedApp = findManagedApp(managedApps, payload.repository.full_name);
+      if (!managedApp) {
+        return json({ ok: true, ignored: 'repository-not-managed' }, 202);
+      }
+
+      const expectedBranch = managedApp.branch || payload.repository.default_branch;
+      if (payload.workflow_run?.head_branch !== expectedBranch) {
+        return json({ ok: true, ignored: 'managed-build-wrong-branch' }, 202);
+      }
+
+      const sourceInstallationId = payload.installation?.id;
+      if (!sourceInstallationId) {
+        throw new Error('workflow_run webhook is missing GitHub App installation context');
+      }
+      const sourceToken = await createSourceInstallationToken(
+        appJwt,
+        sourceInstallationId,
+        payload.repository.name,
+      );
+      const artifactName = managedApp.artifact || DEFAULT_MANAGED_ARTIFACT;
+      const artifact = await findRunArtifact(
+        sourceToken,
+        payload.repository.full_name,
+        payload.workflow_run.id,
+        artifactName,
+      );
+      if (!artifact) {
+        return json({ ok: true, ignored: `workflow-run-without-${artifactName}` }, 202);
+      }
+
+      await dispatchManagedSigningWorkflow(libraryToken, payload, artifact, delivery, env);
       return json({
         ok: true,
         dispatched: true,
+        workflow: env.MANAGED_SIGNING_WORKFLOW || 'managed-signing.yml',
         repository: payload.repository.full_name,
-        tag: payload.release?.tag_name || null,
+        runId: payload.workflow_run.id,
+        artifactId: artifact.id,
         delivery,
       }, 202);
     } catch (error) {
-      console.error('catalog dispatch failed', error);
+      console.error('managed signing dispatch failed', error);
       return json({ error: error instanceof Error ? error.message : String(error) }, 502);
     }
   },
@@ -82,6 +141,27 @@ export function shouldDispatchRelease(payload, env) {
   // Do not require an APK in the webhook payload. GitHub can emit the release event
   // before release assets finish uploading; sync_github.py is the authoritative APK filter.
   return { dispatch: true, reason: 'release-change' };
+}
+
+export function shouldInspectWorkflowRun(payload, env) {
+  const repository = payload?.repository?.full_name;
+  const owner = payload?.repository?.owner?.login;
+  const run = payload?.workflow_run;
+  if (!repository || !run) return { inspect: false, reason: 'missing-workflow-run-context' };
+  if (env.SOURCE_OWNER && owner?.toLowerCase() !== env.SOURCE_OWNER.toLowerCase()) {
+    return { inspect: false, reason: 'outside-source-owner' };
+  }
+  if (payload.action !== 'completed') return { inspect: false, reason: 'workflow-run-not-completed' };
+  if (run.conclusion !== 'success') return { inspect: false, reason: 'workflow-run-not-successful' };
+  if (run.event === 'pull_request' || run.event === 'pull_request_target') {
+    return { inspect: false, reason: 'pull-request-workflow-run' };
+  }
+  return { inspect: true, reason: 'successful-workflow-run' };
+}
+
+export function findManagedApp(apps, repository) {
+  if (!Array.isArray(apps) || !repository) return null;
+  return apps.find((app) => String(app?.repository || '').toLowerCase() === repository.toLowerCase()) || null;
 }
 
 export async function verifyWebhookSignature(secret, body, signature) {
@@ -126,7 +206,7 @@ async function createLibraryInstallationToken(appJwt, installationId, env) {
     method: 'POST',
     body: JSON.stringify({
       repositories: [repo],
-      permissions: { actions: 'write' },
+      permissions: { actions: 'write', contents: 'read' },
     }),
   });
   const data = await response.json();
@@ -136,25 +216,88 @@ async function createLibraryInstallationToken(appJwt, installationId, env) {
   return data.token;
 }
 
-async function dispatchCatalogWorkflow(token, payload, delivery, env) {
+async function createSourceInstallationToken(appJwt, installationId, repositoryName) {
+  const response = await githubFetch(`${API}/app/installations/${installationId}/access_tokens`, appJwt, {
+    method: 'POST',
+    body: JSON.stringify({
+      repositories: [repositoryName],
+      permissions: { actions: 'read' },
+    }),
+  });
+  const data = await response.json();
+  if (!response.ok || !data.token) {
+    throw new Error(`could not mint source repository installation token (${response.status})`);
+  }
+  return data.token;
+}
+
+async function loadManagedApps(token, env) {
   const owner = env.LIBRARY_OWNER || 'garfbargle';
   const repo = env.LIBRARY_REPO || 'library';
-  const workflow = env.LIBRARY_WORKFLOW || 'catalog.yml';
+  const ref = env.LIBRARY_REF || 'main';
+  const response = await githubFetch(
+    `${API}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/config/managed-apps.json?ref=${encodeURIComponent(ref)}`,
+    token,
+    { headers: { accept: 'application/vnd.github.raw+json' } },
+  );
+  if (!response.ok) {
+    throw new Error(`could not load managed app configuration (${response.status})`);
+  }
+  const config = JSON.parse(await response.text());
+  return Array.isArray(config.apps) ? config.apps : [];
+}
+
+async function findRunArtifact(token, repository, runId, artifactName) {
+  const [owner, repo] = repository.split('/');
+  const response = await githubFetch(
+    `${API}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${encodeURIComponent(String(runId))}/artifacts?per_page=100`,
+    token,
+  );
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(`could not inspect workflow artifacts (${response.status})`);
+  }
+  return (data.artifacts || []).find((artifact) => artifact.name === artifactName && !artifact.expired) || null;
+}
+
+async function dispatchCatalogWorkflow(token, payload, delivery, env) {
+  await dispatchLibraryWorkflow(
+    token,
+    env.LIBRARY_WORKFLOW || 'catalog.yml',
+    {
+      source_repository: payload.repository.full_name,
+      release_id: String(payload.release?.id || ''),
+      release_tag: String(payload.release?.tag_name || ''),
+      delivery_id: delivery,
+    },
+    env,
+  );
+}
+
+async function dispatchManagedSigningWorkflow(token, payload, artifact, delivery, env) {
+  await dispatchLibraryWorkflow(
+    token,
+    env.MANAGED_SIGNING_WORKFLOW || 'managed-signing.yml',
+    {
+      source_repository: payload.repository.full_name,
+      source_run_id: String(payload.workflow_run?.id || ''),
+      source_artifact_id: String(artifact.id || ''),
+      delivery_id: delivery,
+    },
+    env,
+  );
+}
+
+async function dispatchLibraryWorkflow(token, workflow, inputs, env) {
+  const owner = env.LIBRARY_OWNER || 'garfbargle';
+  const repo = env.LIBRARY_REPO || 'library';
   const ref = env.LIBRARY_REF || 'main';
   const response = await githubFetch(
     `${API}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/workflows/${encodeURIComponent(workflow)}/dispatches`,
     token,
     {
       method: 'POST',
-      body: JSON.stringify({
-        ref,
-        inputs: {
-          source_repository: payload.repository.full_name,
-          release_id: String(payload.release?.id || ''),
-          release_tag: String(payload.release?.tag_name || ''),
-          delivery_id: delivery,
-        },
-      }),
+      body: JSON.stringify({ ref, inputs }),
     },
   );
   if (!response.ok) {
