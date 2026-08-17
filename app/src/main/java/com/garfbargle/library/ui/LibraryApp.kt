@@ -759,26 +759,38 @@ private fun ReadmeSection(app: AppEntry, readme: String?, readmeLoaded: Boolean)
                 Spacer(Modifier.width(10.dp))
                 Text("Loading from ${app.repository ?: "repository"}…", color = TextSecondary, fontSize = 12.sp)
             }
-            !readme.isNullOrBlank() -> ReadmePanel(readme)
+            !readme.isNullOrBlank() -> ReadmePanel(readme, repository = app.repository)
             else -> ReadmePanel(app.description, markdown = false)
         }
     }
 }
 
 @Composable
-private fun ReadmePanel(content: String, markdown: Boolean = true) {
+private fun ReadmePanel(content: String, markdown: Boolean = true, repository: String? = null) {
+    if (markdown) {
+        RenderedReadme(
+            html = content,
+            repository = repository,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(640.dp)
+                .clip(RoundedCornerShape(20.dp))
+                .background(Color(0xFF111214))
+        )
+        return
+    }
+
     val scrollState = rememberScrollState()
     Box(
         Modifier
             .fillMaxWidth()
-            .heightIn(max = 320.dp)
+            .heightIn(max = 640.dp)
             .clip(RoundedCornerShape(20.dp))
             .background(Color(0xFF111214))
             .verticalScroll(scrollState)
             .padding(16.dp)
     ) {
-        if (markdown) ReadmeContent(content)
-        else Text(content, color = TextSecondary, fontSize = 14.sp, lineHeight = 21.sp)
+        Text(content, color = TextSecondary, fontSize = 14.sp, lineHeight = 21.sp)
     }
 }
 
@@ -909,131 +921,6 @@ private fun DisclosureCard(
         if (expanded) {
             HorizontalDivider(color = Color(0xFF23252A))
             Column(Modifier.padding(16.dp)) { content() }
-        }
-    }
-}
-
-private enum class ReadmeKind { HEADING, PARAGRAPH, BULLET, QUOTE, CODE, DIVIDER }
-private data class ReadmeBlock(val kind: ReadmeKind, val text: String, val level: Int = 0)
-
-private fun parseReadme(markdown: String): List<ReadmeBlock> {
-    val blocks = mutableListOf<ReadmeBlock>()
-    val paragraph = mutableListOf<String>()
-    val code = mutableListOf<String>()
-    var inCode = false
-
-    fun flushParagraph() {
-        if (paragraph.isNotEmpty()) {
-            cleanInlineMarkdown(paragraph.joinToString(" ")).takeIf { it.isNotBlank() }?.let {
-                blocks += ReadmeBlock(ReadmeKind.PARAGRAPH, it)
-            }
-            paragraph.clear()
-        }
-    }
-
-    fun flushCode() {
-        if (code.isNotEmpty()) {
-            blocks += ReadmeBlock(ReadmeKind.CODE, code.joinToString("\n").trimEnd())
-            code.clear()
-        }
-    }
-
-    markdown.lines().forEach { raw ->
-        val line = raw.trimEnd()
-        if (line.trimStart().startsWith("```")) {
-            flushParagraph()
-            if (inCode) flushCode()
-            inCode = !inCode
-            return@forEach
-        }
-        if (inCode) {
-            code += raw
-            return@forEach
-        }
-        val trimmed = line.trim()
-        if (trimmed.isBlank()) {
-            flushParagraph()
-            return@forEach
-        }
-        if (trimmed.startsWith("<") && trimmed.endsWith(">") && !trimmed.contains("</")) {
-            flushParagraph()
-            return@forEach
-        }
-        val heading = Regex("^(#{1,6})\\s+(.+)$").find(trimmed)
-        if (heading != null) {
-            flushParagraph()
-            blocks += ReadmeBlock(ReadmeKind.HEADING, cleanInlineMarkdown(heading.groupValues[2]), heading.groupValues[1].length)
-            return@forEach
-        }
-        if (Regex("^[-*_]{3,}$").matches(trimmed)) {
-            flushParagraph()
-            blocks += ReadmeBlock(ReadmeKind.DIVIDER, "")
-            return@forEach
-        }
-        val bullet = Regex("^(?:[-*+] |\\d+[.)] )(.+)$").find(trimmed)
-        if (bullet != null) {
-            flushParagraph()
-            blocks += ReadmeBlock(ReadmeKind.BULLET, cleanInlineMarkdown(bullet.groupValues[1]))
-            return@forEach
-        }
-        if (trimmed.startsWith(">")) {
-            flushParagraph()
-            blocks += ReadmeBlock(ReadmeKind.QUOTE, cleanInlineMarkdown(trimmed.removePrefix(">").trim()))
-            return@forEach
-        }
-        paragraph += trimmed
-    }
-    flushParagraph()
-    flushCode()
-    return blocks
-}
-
-private fun cleanInlineMarkdown(value: String): String = value
-    .replace(Regex("!\\[([^]]*)]\\([^)]+\\)"), "$1")
-    .replace(Regex("\\[([^]]+)]\\([^)]+\\)"), "$1")
-    .replace(Regex("<[^>]+>"), "")
-    .replace("**", "")
-    .replace("__", "")
-    .replace("~~", "")
-    .replace("`", "")
-    .trim()
-
-@Composable
-private fun ReadmeContent(markdown: String) {
-    val blocks = remember(markdown) { parseReadme(markdown) }
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        blocks.forEach { block ->
-            when (block.kind) {
-                ReadmeKind.HEADING -> Text(
-                    block.text,
-                    color = TextPrimary,
-                    fontSize = when (block.level) { 1 -> 24.sp; 2 -> 20.sp; 3 -> 17.sp; else -> 15.sp },
-                    fontWeight = FontWeight.Bold,
-                    lineHeight = when (block.level) { 1 -> 30.sp; 2 -> 26.sp; else -> 22.sp },
-                    modifier = Modifier.padding(top = if (block.level <= 2) 6.dp else 2.dp)
-                )
-                ReadmeKind.PARAGRAPH -> Text(block.text, color = TextSecondary, fontSize = 14.sp, lineHeight = 21.sp)
-                ReadmeKind.BULLET -> Row {
-                    Text("•", color = Acid, modifier = Modifier.width(18.dp))
-                    Text(block.text, color = TextSecondary, fontSize = 14.sp, lineHeight = 21.sp)
-                }
-                ReadmeKind.QUOTE -> Text(
-                    block.text,
-                    color = Color(0xFF9A9DA6),
-                    fontSize = 13.sp,
-                    lineHeight = 20.sp,
-                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(Color(0xFF111315)).padding(12.dp)
-                )
-                ReadmeKind.CODE -> Text(
-                    block.text,
-                    color = Color(0xFFC7CAD2),
-                    fontSize = 11.sp,
-                    lineHeight = 17.sp,
-                    fontFamily = FontFamily.Monospace,
-                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Color(0xFF0E0F11)).padding(13.dp)
-                )
-                ReadmeKind.DIVIDER -> HorizontalDivider(color = Color(0xFF24262B))
-            }
         }
     }
 }

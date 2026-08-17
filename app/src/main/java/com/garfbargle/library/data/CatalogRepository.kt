@@ -35,13 +35,13 @@ class CatalogRepository(
         val url = "https://api.github.com/repos/$repo/readme"
         val token = tokenStore.token()
         val authenticated = runCatching {
-            GitHubHttp.getText(url, token, accept = "application/vnd.github.raw+json")
+            GitHubHttp.getText(url, token, accept = "application/vnd.github.html+json")
         }.getOrNull()
         if (!authenticated.isNullOrBlank()) return@withContext authenticated
 
         if (!token.isNullOrBlank() && entry.visibility == AppVisibility.PUBLIC) {
             return@withContext runCatching {
-                GitHubHttp.getText(url, null, accept = "application/vnd.github.raw+json")
+                GitHubHttp.getText(url, null, accept = "application/vnd.github.html+json")
             }.getOrNull()?.takeIf { it.isNotBlank() }
         }
         null
