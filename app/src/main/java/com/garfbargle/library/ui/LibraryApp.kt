@@ -473,10 +473,9 @@ private fun LibraryScreen(
             .thenByDescending { it.featured }
             .thenBy { it.name.lowercase() })
     val allInstalled = apps.isNotEmpty() && missingApps.isEmpty()
-    val primaryPool = if (missingApps.isNotEmpty()) missingApps else ownedApps
-    val hero = primaryPool.firstOrNull()
-    val primaryRemainder = primaryPool.drop(1)
-    val ownedExtras = if (missingApps.isNotEmpty()) ownedApps else emptyList()
+    val discoveryPool = if (missingApps.isNotEmpty()) missingApps else ownedApps
+    val hero = discoveryPool.firstOrNull()
+    val discoveryRemainder = discoveryPool.drop(1)
 
     LazyVerticalGrid(
         columns = if (searching || !wideLayout) GridCells.Fixed(1) else GridCells.Adaptive(270.dp),
@@ -503,8 +502,8 @@ private fun LibraryScreen(
                         when {
                             searching -> "Search the full catalog."
                             apps.isEmpty() -> "A small, trusted app catalog."
-                            allInstalled -> "Everything in the catalog is already yours."
-                            else -> "Discover apps you haven't added yet."
+                            allInstalled -> "You've got everything. Browse the catalog, or manage installs in Apps."
+                            else -> "Find something new. Apps not on this device come first."
                         },
                         color = TextSecondary,
                         fontSize = 13.sp
@@ -537,7 +536,7 @@ private fun LibraryScreen(
             item(span = { GridItemSpan(maxLineSpan) }) {
                 StorefrontSectionHeading(
                     title = if (searchResults.isEmpty()) "No results" else "Results",
-                    subtitle = if (searchResults.isEmpty()) "Try a different search." else "${searchResults.size} ${if (searchResults.size == 1) "app" else "apps"}"
+                    subtitle = if (searchResults.isEmpty()) "Try a different search." else "${searchResults.size} ${if (searchResults.size == 1) "app" else "apps"} across the catalog."
                 )
             }
             if (searchResults.isEmpty()) {
@@ -568,6 +567,29 @@ private fun LibraryScreen(
                 )
             }
         } else {
+            if (allInstalled) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(24.dp))
+                            .background(Color(0xFF121512))
+                            .padding(20.dp)
+                    ) {
+                        Icon(Icons.Default.CheckCircle, null, tint = Acid, modifier = Modifier.size(24.dp))
+                        Spacer(Modifier.height(14.dp))
+                        Text("You're all caught up", color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(5.dp))
+                        Text(
+                            "Every app in Library is installed. This tab stays useful for browsing; use Apps for updates and management.",
+                            color = TextSecondary,
+                            fontSize = 13.sp,
+                            lineHeight = 19.sp
+                        )
+                    }
+                }
+            }
+
             hero?.let { app ->
                 item(span = { GridItemSpan(maxLineSpan) }) {
                     StorefrontHero(
@@ -582,33 +604,14 @@ private fun LibraryScreen(
                 }
             }
 
-            if (primaryRemainder.isNotEmpty()) {
+            if (discoveryRemainder.isNotEmpty()) {
                 item(span = { GridItemSpan(maxLineSpan) }) {
                     StorefrontSectionHeading(
-                        title = if (allInstalled) "Your collection" else "More to discover",
-                        subtitle = if (allInstalled) "Installed and ready to open." else "Picked from apps not on this device yet."
+                        title = if (allInstalled) "Browse the catalog" else "More to discover",
+                        subtitle = if (allInstalled) "Everything here is already installed." else "More apps you haven't downloaded yet."
                     )
                 }
-                gridItems(primaryRemainder, key = { it.id }) { app ->
-                    StorefrontAppCard(
-                        app = app,
-                        installed = installed[app.packageName] ?: InstalledState(false),
-                        state = installStates[app.packageName] ?: InstallState.Idle,
-                        onOpen = onOpen,
-                        onLaunch = onLaunch,
-                        onInstall = onInstall
-                    )
-                }
-            }
-
-            if (ownedExtras.isNotEmpty()) {
-                item(span = { GridItemSpan(maxLineSpan) }) {
-                    StorefrontSectionHeading(
-                        title = "Already yours",
-                        subtitle = "Installed apps stay close without taking over discovery."
-                    )
-                }
-                gridItems(ownedExtras, key = { "owned-${it.id}" }) { app ->
+                gridItems(discoveryRemainder, key = { it.id }) { app ->
                     StorefrontAppCard(
                         app = app,
                         installed = installed[app.packageName] ?: InstalledState(false),
@@ -643,7 +646,7 @@ private fun StorefrontHero(
             .padding(22.dp)
     ) {
         Text(
-            if (allInstalled) "IN YOUR LIBRARY" else if (app.featured) "FEATURED" else "DISCOVER",
+            if (allInstalled) "FROM YOUR CATALOG" else if (app.featured) "FEATURED FOR YOU" else "DISCOVER",
             color = accent,
             fontSize = 10.sp,
             fontWeight = FontWeight.Black,
@@ -774,17 +777,22 @@ private fun AppsScreen(
     wideLayout: Boolean
 ) {
     var updatesOnly by rememberSaveable { mutableStateOf(false) }
-    val installedApps = apps.filter { installed[it.packageName]?.installed == true }
-    val visible = if (updatesOnly) {
-        installedApps.filter { installed[it.packageName]?.hasUpdate(it) == true }
-    } else {
-        installedApps
-    }
+    val installedApps = apps
+        .filter { installed[it.packageName]?.installed == true }
+        .sortedWith(compareByDescending<AppEntry> { installed[it.packageName]?.hasUpdate(it) == true }
+            .thenBy { it.name.lowercase() })
+    val updateApps = installedApps.filter { installed[it.packageName]?.hasUpdate(it) == true }
+    val currentApps = installedApps.filterNot { installed[it.packageName]?.hasUpdate(it) == true }
 
     LazyVerticalGrid(
         columns = if (wideLayout) GridCells.Adaptive(340.dp) else GridCells.Fixed(1),
         modifier = Modifier.fillMaxSize().padding(padding),
-        contentPadding = PaddingValues(if (wideLayout) 32.dp else 20.dp),
+        contentPadding = PaddingValues(
+            start = if (wideLayout) 32.dp else 20.dp,
+            end = if (wideLayout) 32.dp else 20.dp,
+            top = if (wideLayout) 26.dp else 20.dp,
+            bottom = 32.dp
+        ),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
@@ -792,39 +800,101 @@ private fun AppsScreen(
             Column {
                 Spacer(Modifier.height(8.dp))
                 Text("Apps", color = TextPrimary, fontSize = 30.sp, fontWeight = FontWeight.Bold)
-                Text("Installed on this device.", color = TextSecondary, fontSize = 13.sp)
-                Spacer(Modifier.height(12.dp))
-                FilterChip(
-                    selected = updatesOnly,
-                    onClick = { updatesOnly = !updatesOnly },
-                    label = { Text("Updates only") },
-                    leadingIcon = {
-                        Icon(
-                            if (updatesOnly) Icons.Default.CheckCircle else Icons.Default.SystemUpdate,
-                            null,
-                            modifier = Modifier.size(17.dp)
-                        )
-                    }
+                Text(
+                    when {
+                        installedApps.isEmpty() -> "Installed apps live here."
+                        updateApps.isEmpty() -> "${installedApps.size} installed · everything is current."
+                        else -> "${installedApps.size} installed · ${updateApps.size} ${if (updateApps.size == 1) "update" else "updates"} available."
+                    },
+                    color = TextSecondary,
+                    fontSize = 13.sp
                 )
+                if (installedApps.isNotEmpty()) {
+                    Spacer(Modifier.height(12.dp))
+                    FilterChip(
+                        selected = updatesOnly,
+                        onClick = { updatesOnly = !updatesOnly },
+                        label = { Text("Updates only") },
+                        leadingIcon = {
+                            Icon(
+                                if (updatesOnly) Icons.Default.CheckCircle else Icons.Default.SystemUpdate,
+                                null,
+                                modifier = Modifier.size(17.dp)
+                            )
+                        }
+                    )
+                }
             }
         }
-        if (visible.isEmpty()) {
+
+        if (installedApps.isEmpty()) {
             item(span = { GridItemSpan(maxLineSpan) }) {
                 EmptyCard(
-                    if (updatesOnly) "All current" else "No apps yet",
-                    if (updatesOnly) "No installed apps have updates right now." else "Installed catalog apps will collect here."
+                    "No installed apps",
+                    "Find something in Library and install it. Your apps will show up here for opening, updates, and version management."
                 )
             }
-        }
-        gridItems(visible, key = { it.id }) { app ->
-            AppCard(
-                app,
-                installed[app.packageName] ?: InstalledState(false),
-                installStates[app.packageName] ?: InstallState.Idle,
-                onOpen,
-                onLaunch,
-                onInstall
-            )
+        } else if (updatesOnly) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                StorefrontSectionHeading(
+                    title = if (updateApps.isEmpty()) "All current" else "Updates",
+                    subtitle = if (updateApps.isEmpty()) "No installed apps need an update right now." else "Update these apps without digging through the catalog."
+                )
+            }
+            if (updateApps.isEmpty()) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    EmptyCard("All current", "No installed apps have updates right now.")
+                }
+            } else {
+                gridItems(updateApps, key = { "update-${it.id}" }) { app ->
+                    AppCard(
+                        app,
+                        installed[app.packageName] ?: InstalledState(false),
+                        installStates[app.packageName] ?: InstallState.Idle,
+                        onOpen,
+                        onLaunch,
+                        onInstall
+                    )
+                }
+            }
+        } else {
+            if (updateApps.isNotEmpty()) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    StorefrontSectionHeading(
+                        title = "Updates",
+                        subtitle = "Keep these installed apps current."
+                    )
+                }
+                gridItems(updateApps, key = { "update-${it.id}" }) { app ->
+                    AppCard(
+                        app,
+                        installed[app.packageName] ?: InstalledState(false),
+                        installStates[app.packageName] ?: InstallState.Idle,
+                        onOpen,
+                        onLaunch,
+                        onInstall
+                    )
+                }
+            }
+
+            if (currentApps.isNotEmpty()) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    StorefrontSectionHeading(
+                        title = "Installed",
+                        subtitle = "Open an app, or tap its row to manage versions and details."
+                    )
+                }
+                gridItems(currentApps, key = { "installed-${it.id}" }) { app ->
+                    AppCard(
+                        app,
+                        installed[app.packageName] ?: InstalledState(false),
+                        installStates[app.packageName] ?: InstallState.Idle,
+                        onOpen,
+                        onLaunch,
+                        onInstall
+                    )
+                }
+            }
         }
     }
 }
