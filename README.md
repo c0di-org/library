@@ -29,7 +29,9 @@ Publish a stable GitHub Release containing a standalone signed `.apk`. Library i
 
 ### Library-managed releases
 
-An app repository's CI uploads an unsigned release APK as an Actions artifact named `library-unsigned-apk`. The repository is enrolled centrally in `config/managed-apps.json`, which pins its repository, package name, branch, and artifact name. Library downloads only that allowlisted artifact, validates it, aligns it, signs it with the managed-app distribution identity, verifies it, and publishes the final APK as a stable GitHub Release.
+An app repository's release workflow uploads an unsigned release APK as an Actions artifact named `library-unsigned-apk`. The repository is enrolled centrally in `config/managed-apps.json`, which pins its repository, package name, branch, artifact name, and optional release-tag prefix. Library downloads only that allowlisted artifact, validates it, aligns it, signs it with the managed-app distribution identity, verifies it, and publishes the final APK as a stable GitHub Release.
+
+For the Tauri app convention, app repositories use stable Android release tags of the form `android-vX.Y.Z`. Their automatic `main` workflow should emit `library-unsigned-apk` only when the committed stable version is newer than the latest published Android release. Manual CI/check workflows must never use that artifact name.
 
 The signing allowlist lives in Library rather than the app repository. Compromising an app repository therefore cannot change which Android package Library is willing to sign without a separate change to Library itself.
 
@@ -44,7 +46,7 @@ Library keeps authorship, build provenance, distribution, and signing identity d
 Trust labels are explicit:
 
 - **Developer signed** — original developer APK, unchanged.
-- **Library managed** — unsigned CI artifact from a centrally allowlisted repository, validated and signed by Library's managed-app distribution identity.
+- **Library managed** — unsigned release artifact from a centrally allowlisted repository, validated and signed by Library's managed-app distribution identity.
 - **Binary release** — distributed without a source claim, still hash/signer pinned.
 
 The Library application signing key signs **only Library**. Library-managed apps use a separate distribution key. Managed apps currently share that distribution identity, which is an intentional operational tradeoff and should be limited to packages you control and want under one signer.
@@ -53,7 +55,7 @@ The Library application signing key signs **only Library**. Library-managed apps
 
 Public GitHub releases are discovered anonymously. To index private repositories, configure `LIBRARY_GITHUB_TOKEN` with read-only access to the repositories Library should index.
 
-Library-managed signing requires that token to have `Actions: read`, `Contents: write`, and `Metadata: read` on each repository listed in `config/managed-apps.json` so it can retrieve unsigned CI artifacts and publish signed Releases.
+Library-managed signing requires that token to have `Actions: read`, `Contents: write`, and `Metadata: read` on each repository listed in `config/managed-apps.json` so it can retrieve unsigned release artifacts and publish signed Releases.
 
 Private downloads on Android require GitHub access in Settings. The token is encrypted with an AES-GCM key held by Android Keystore. Library sends authorization only to `api.github.com` and does not forward it to GitHub's release CDN redirects.
 
@@ -61,19 +63,19 @@ Private downloads on Android require GitHub access in Settings. The token is enc
 
 ### Android CI
 
-Every push and pull request validates helper scripts and the catalog, runs Android lint/tests, builds a debug APK, and uploads it as an Actions artifact.
+Android verification is manual-only. Dispatch `.github/workflows/android.yml` when a human or agent needs remote validation; an optional ref can target the exact branch, tag, or SHA being checked. Ordinary pushes and pull requests do not automatically consume Android runners.
 
 ### Managed APK signing
 
-Hourly, and on manual dispatch, Library scans only the repositories in `config/managed-apps.json` for a new successful `library-unsigned-apk` artifact from the pinned branch. It signs and publishes qualifying builds. Signing secrets live only in Library's protected production environment.
+Managed signing is event-driven. The GitHub App webhook inspects successful workflow runs from repositories in `config/managed-apps.json`; when a run is on the pinned branch and contains the allowlisted `library-unsigned-apk` artifact, the webhook dispatches Library's protected managed-signing workflow. The signing workflow also remains manually dispatchable for operations/recovery. Signing secrets live only in Library's protected production environment.
 
 ### Rolling catalog
 
-Every six hours, and on manual dispatch, the catalog workflow scans GitHub releases and publishes `catalog.json` to a rolling GitHub Release tagged `catalog`.
+Catalog refresh is event-driven from GitHub release webhooks and remains manually dispatchable. A qualifying release event dispatches `.github/workflows/catalog.yml`, which scans GitHub releases and publishes `catalog.json` to the rolling GitHub Release tagged `catalog`. There is no periodic polling schedule.
 
 ### Signed Library releases
 
-Library itself uses an entirely separate stable signing key. A newer semantic version on `main` builds a release-signed APK and publishes its APK, checksum, and catalog.
+Library itself uses an entirely separate stable signing key. A newer semantic version on `main` builds a release-signed APK and publishes its APK, checksum, and catalog. Commits whose tracked version is not newer stop at the release gate rather than rebuilding.
 
 See `docs/RELEASES.md` and `docs/SIGNING.md` for setup and operational details.
 
@@ -111,7 +113,8 @@ scripts/sync_github.py           GitHub release discovery + APK inspection
 scripts/manage_unsigned_apks.py  managed unsigned-artifact signing + publishing
 scripts/build_catalog.py         aggregate catalog generation
 scripts/validate_catalog.py      deterministic validation
-.github/workflows/               CI, signing, catalog, and Library releases
+.github/workflows/               manual CI, signing, catalog, and Library releases
+infra/catalog-webhook/           GitHub App webhook for release/signing dispatch
 docs/                            architecture, signing, release operations
 ```
 
