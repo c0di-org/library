@@ -41,7 +41,7 @@ An app repository's release workflow uploads an unsigned release APK as an Actio
 }
 ```
 
-`branch` and `artifact` may also be specified under `managedSigning`; they default to the repository's default branch and `library-unsigned-apk`. The webhook reads this declaration from the exact commit that produced the successful workflow artifact, then the protected signing workflow independently reads the same commit again before the distribution key is used.
+The GitHub App webhook treats a successful default-branch workflow containing `library-unsigned-apk` as a signing candidate. It passes the source repository, run, artifact, and commit SHA to Library's protected signing workflow. **The protected workflow is the authority:** it reads `.library.json` from that exact source commit and resolves repo-side enrollment before the distribution key can be used.
 
 `config/managed-apps.json` remains supported as a central hard-pinned enrollment/override path. A central entry wins over repository metadata. This is useful for repositories that should not be able to change their own signing package declaration, and for non-Tauri/legacy integrations.
 
@@ -69,7 +69,7 @@ Repository-side enrollment is owner-scoped: the webhook only considers successfu
 
 Public GitHub releases are discovered anonymously. To index private repositories, configure `LIBRARY_GITHUB_TOKEN` with read-only access to the repositories Library should index.
 
-Library-managed signing requires the Library GitHub App/token to read Actions artifacts and repository contents for managed repositories, and the protected signing token to publish signed Releases. Repo-side enrollment specifically requires reading `.library.json` from the source commit.
+For managed signing, the Library GitHub App needs Actions read access to source repositories so it can locate the candidate artifact. The protected `LIBRARY_GITHUB_TOKEN` needs repository contents access to read `.library.json`, Actions read access to retrieve artifacts, and contents write access to publish the signed Release. Keep that token scoped to repositories Library is intended to manage.
 
 Private downloads on Android require GitHub access in Settings. The token is encrypted with an AES-GCM key held by Android Keystore. Library sends authorization only to `api.github.com` and does not forward it to GitHub's release CDN redirects.
 
@@ -81,7 +81,7 @@ Android verification is manual-only. Dispatch `.github/workflows/android.yml` wh
 
 ### Managed APK signing
 
-Managed signing is event-driven. The GitHub App webhook inspects successful non-PR workflow runs from repositories owned by the configured source owner. It resolves enrollment centrally first and otherwise from `.library.json` at the run's exact commit. When the run is on the enrolled branch and contains the enrolled `library-unsigned-apk` artifact, the webhook dispatches Library's protected managed-signing workflow. The signer independently resolves enrollment again before using signing secrets. The signing workflow also remains manually dispatchable for operations/recovery.
+Managed signing is event-driven. The GitHub App webhook inspects successful non-PR workflow runs from repositories owned by the configured source owner. A centrally enrolled repository uses its pinned branch/artifact; otherwise a successful default-branch run containing `library-unsigned-apk` is dispatched as a repo-side enrollment candidate. The protected signing workflow then resolves central enrollment first and otherwise validates `.library.json` at the exact source commit before signing. The signing workflow remains manually dispatchable for operations/recovery.
 
 ### Rolling catalog
 
@@ -135,4 +135,4 @@ docs/                            architecture, signing, release operations
 
 ## Security boundary
 
-Library does not sign arbitrary workflow output. A managed request must come from the configured source owner, resolve either a central enrollment or a `library-managed` `.library.json` declaration, run on the enrolled branch, and contain the enrolled artifact name. The protected signer repeats enrollment resolution and rejects package mismatches, split APKs, already-signed artifacts, duplicate source artifacts, and non-increasing published `versionCode` values before the managed distribution key is used.
+Library does not sign arbitrary workflow output. A managed candidate must come from the configured source owner, use the enrolled/default branch and artifact name, and then resolve either a central enrollment or a `library-managed` `.library.json` declaration inside the protected signing workflow. The signer rejects package mismatches, split APKs, already-signed artifacts, duplicate source artifacts, and non-increasing published `versionCode` values before the managed distribution key is used.
