@@ -1,9 +1,24 @@
 name: Managed APK Signing
 
 on:
-  schedule:
-    - cron: '41 * * * *'
   workflow_dispatch:
+    inputs:
+      source_repository:
+        description: Managed repository whose build produced an unsigned APK
+        required: false
+        type: string
+      source_run_id:
+        description: Source workflow run ID that produced the artifact
+        required: false
+        type: string
+      source_artifact_id:
+        description: Source unsigned APK artifact ID
+        required: false
+        type: string
+      delivery_id:
+        description: GitHub webhook delivery ID
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -22,10 +37,14 @@ jobs:
       LIBRARY_DISTRIBUTION_STORE_PASSWORD: ${{ secrets.LIBRARY_DISTRIBUTION_STORE_PASSWORD }}
       LIBRARY_DISTRIBUTION_KEY_ALIAS: ${{ secrets.LIBRARY_DISTRIBUTION_KEY_ALIAS }}
       LIBRARY_DISTRIBUTION_KEY_PASSWORD: ${{ secrets.LIBRARY_DISTRIBUTION_KEY_PASSWORD }}
+      SOURCE_REPOSITORY: ${{ inputs.source_repository }}
+      SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+      SOURCE_ARTIFACT_ID: ${{ inputs.source_artifact_id }}
+      DELIVERY_ID: ${{ inputs.delivery_id }}
     steps:
       - uses: actions/checkout@v5
 
-      - name: Check managed-app enrollment
+      - name: Select managed app
         id: enrollment
         shell: bash
         run: |
@@ -34,11 +53,32 @@ jobs:
           import os
           from pathlib import Path
 
-          root = json.loads(Path("config/managed-apps.json").read_text())
-          enabled = bool(root.get("apps"))
+          path = Path("config/managed-apps.json")
+          root = json.loads(path.read_text())
+          apps = root.get("apps", [])
+          target = os.environ.get("SOURCE_REPOSITORY", "").strip()
+
+          if target:
+              selected = [
+                  app for app in apps
+                  if str(app.get("repository", "")).lower() == target.lower()
+              ]
+              if not selected:
+                  raise SystemExit(f"requested repository is not enrolled for managed signing: {target}")
+              root["apps"] = selected
+              path.write_text(json.dumps(root, indent=2) + "\n")
+              print(
+                  "managed signing requested by "
+                  f"{target} (run {os.environ.get('SOURCE_RUN_ID') or '?'}, "
+                  f"artifact {os.environ.get('SOURCE_ARTIFACT_ID') or '?'}, "
+                  f"delivery {os.environ.get('DELIVERY_ID') or '?'})"
+              )
+          else:
+              selected = apps
+              print(f"manual managed-signing catch-up: {len(selected)} enrolled app(s)")
+
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-              output.write(f"enabled={'true' if enabled else 'false'}\n")
-          print(f"managed signing {'enabled' if enabled else 'disabled'}: {len(root.get('apps', []))} app(s)")
+              output.write(f"enabled={'true' if selected else 'false'}\n")
           PY
 
       - uses: android-actions/setup-android@v3
@@ -65,7 +105,7 @@ jobs:
           chmod 600 "$RUNNER_TEMP/library-distribution.jks"
           echo "LIBRARY_DISTRIBUTION_KEYSTORE_FILE=$RUNNER_TEMP/library-distribution.jks" >> "$GITHUB_ENV"
 
-      - name: Sign and publish allowlisted app artifacts
+      - name: Sign and publish requested app artifact
         if: steps.enrollment.outputs.enabled == 'true'
         run: python3 scripts/manage_unsigned_apks.py
 
