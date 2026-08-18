@@ -9,18 +9,18 @@ import {
 } from './worker.mjs';
 
 const env = {
-  SOURCE_OWNER: 'garfbargle',
-  LIBRARY_OWNER: 'garfbargle',
+  SOURCE_OWNER: 'c0di-org',
+  LIBRARY_OWNER: 'c0di-org',
   LIBRARY_REPO: 'library',
 };
 
 const payload = {
   action: 'published',
   repository: {
-    full_name: 'garfbargle/example',
+    full_name: 'c0di-org/example',
     name: 'example',
     default_branch: 'main',
-    owner: { login: 'garfbargle' },
+    owner: { login: 'c0di-org' },
   },
   release: {
     id: 7,
@@ -65,7 +65,7 @@ assert.equal(
   shouldDispatchRelease(
     {
       ...payload,
-      repository: { ...payload.repository, full_name: 'garfbargle/library', name: 'library' },
+      repository: { ...payload.repository, full_name: 'c0di-org/library', name: 'library' },
       release: { ...payload.release, tag_name: 'catalog' },
     },
     env,
@@ -77,10 +77,10 @@ const workflowRunPayload = {
   action: 'completed',
   installation: { id: 99 },
   repository: {
-    full_name: 'garfbargle/papyrus',
+    full_name: 'c0di-org/papyrus',
     name: 'papyrus',
     default_branch: 'main',
-    owner: { login: 'garfbargle' },
+    owner: { login: 'c0di-org' },
   },
   workflow_run: {
     id: 123,
@@ -117,11 +117,11 @@ assert.equal(
 );
 
 const managedApps = [
-  { repository: 'garfbargle/papyrus', branch: 'main', artifact: 'library-unsigned-apk' },
-  { repository: 'garfbargle/Fiddler', branch: 'main', artifact: 'library-unsigned-apk' },
+  { repository: 'c0di-org/papyrus', branch: 'main', artifact: 'library-unsigned-apk' },
+  { repository: 'c0di-org/Fiddler', branch: 'main', artifact: 'library-unsigned-apk' },
 ];
-assert.equal(findManagedApp(managedApps, 'garfbargle/PAPYRUS')?.branch, 'main');
-assert.equal(findManagedApp(managedApps, 'garfbargle/not-managed'), null);
+assert.equal(findManagedApp(managedApps, 'c0di-org/PAPYRUS')?.branch, 'main');
+assert.equal(findManagedApp(managedApps, 'c0di-org/not-managed'), null);
 
 const secret = 'webhook-secret';
 const body = JSON.stringify(payload);
