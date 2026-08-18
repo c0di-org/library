@@ -13,7 +13,7 @@ require(versionMinor.toInt() <= 999 && versionPatch.toInt() <= 999) {
 }
 val libraryVersionCode = versionMajor.toInt() * 1_000_000 + versionMinor.toInt() * 1_000 + versionPatch.toInt()
 val catalogUrl = providers.gradleProperty("LIBRARY_CATALOG_URL").orElse("")
-val catalogRepository = providers.gradleProperty("LIBRARY_CATALOG_REPOSITORY").orElse("garfbargle/library")
+val catalogRepository = providers.gradleProperty("LIBRARY_CATALOG_REPOSITORY").orElse("c0di-org/library")
 val githubAppClientId = providers.environmentVariable("LIBRARY_GITHUB_APP_CLIENT_ID")
     .orElse(providers.gradleProperty("LIBRARY_GITHUB_APP_CLIENT_ID"))
     .orElse("")
