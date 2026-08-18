@@ -2,28 +2,28 @@
   "schemaVersion": 1,
   "apps": [
     {
-      "repository": "garfbargle/papyrus",
+      "repository": "c0di-org/papyrus",
       "packageName": "com.papyrus.notes",
       "branch": "main",
       "artifact": "library-unsigned-apk",
       "tagPrefix": "android-v"
     },
     {
-      "repository": "garfbargle/Fiddler",
+      "repository": "c0di-org/Fiddler",
       "packageName": "app.fiddler.desktop",
       "branch": "main",
       "artifact": "library-unsigned-apk",
       "tagPrefix": "android-v"
     },
     {
-      "repository": "garfbargle/gitty",
+      "repository": "c0di-org/gitty",
       "packageName": "app.gitty.desktop",
       "branch": "main",
       "artifact": "library-unsigned-apk",
       "tagPrefix": "android-v"
     },
     {
-      "repository": "garfbargle/box",
+      "repository": "c0di-org/box",
       "packageName": "dev.localagent.workstation.stock",
       "branch": "main",
       "artifact": "library-unsigned-apk",
