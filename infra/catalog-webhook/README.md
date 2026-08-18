@@ -16,7 +16,7 @@ The catalog's existing six-hour schedule remains as a safety net. Managed APK si
 1. GitHub sends a `release` webhook for repositories where the App is installed.
 2. The Worker verifies `X-Hub-Signature-256`.
 3. Draft releases are ignored, and Library's rolling `catalog` release is ignored to prevent a feedback loop.
-4. The Worker mints a short-lived installation token scoped to `garfbargle/library` and dispatches `.github/workflows/catalog.yml`.
+4. The Worker mints a short-lived installation token scoped to `c0di-org/library` and dispatches `.github/workflows/catalog.yml`.
 5. `catalog.yml` performs the normal full reconciliation; `sync_github.py` remains the authoritative APK filter.
 
 ### Managed APK signing

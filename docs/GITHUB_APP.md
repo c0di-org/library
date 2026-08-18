@@ -21,7 +21,7 @@ The catalog workflow mints a one-hour GitHub App installation token instead of u
 - repository variable `LIBRARY_CATALOG_APP_CLIENT_ID`
 - repository or environment secret `LIBRARY_CATALOG_APP_PRIVATE_KEY`
 
-Install the App on the repositories Library should discover. The catalog workflow asks GitHub for a token scoped to `Contents: read` and uses the normal repository `GITHUB_TOKEN` only to publish the public rolling catalog in `garfbargle/library`.
+Install the App on the repositories Library should discover. The catalog workflow asks GitHub for a token scoped to `Contents: read` and uses the normal repository `GITHUB_TOKEN` only to publish the public rolling catalog in `c0di-org/library`.
 
 ## Managed signing
 
