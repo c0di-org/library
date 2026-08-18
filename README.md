@@ -1,6 +1,6 @@
 # Library
 
-[![Android CI](https://github.com/garfbargle/library/actions/workflows/android.yml/badge.svg)](https://github.com/garfbargle/library/actions/workflows/android.yml)
+[![Android CI](https://github.com/c0di-org/library/actions/workflows/android.yml/badge.svg)](https://github.com/c0di-org/library/actions/workflows/android.yml)
 
 **Apps, without the mall.**
 
