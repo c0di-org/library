@@ -37,6 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
+      LIBRARY_GITHUB_OWNER: ${{ github.repository_owner }}
       LIBRARY_GITHUB_TOKEN: ${{ secrets.LIBRARY_GITHUB_TOKEN }}
       LIBRARY_DISTRIBUTION_STORE_PASSWORD: ${{ secrets.LIBRARY_DISTRIBUTION_STORE_PASSWORD }}
       LIBRARY_DISTRIBUTION_KEY_ALIAS: ${{ secrets.LIBRARY_DISTRIBUTION_KEY_ALIAS }}
