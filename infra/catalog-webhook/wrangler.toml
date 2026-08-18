@@ -4,8 +4,8 @@ compatibility_date = "2026-08-16"
 workers_dev = true
 
 [vars]
-SOURCE_OWNER = "garfbargle"
-LIBRARY_OWNER = "garfbargle"
+SOURCE_OWNER = "c0di-org"
+LIBRARY_OWNER = "c0di-org"
 LIBRARY_REPO = "library"
 LIBRARY_WORKFLOW = "catalog.yml"
 MANAGED_SIGNING_WORKFLOW = "managed-signing.yml"
