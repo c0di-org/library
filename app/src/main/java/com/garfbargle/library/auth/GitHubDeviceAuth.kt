@@ -33,11 +33,23 @@ class GitHubDeviceAuth(private val clientId: String) {
             DEVICE_CODE_URL,
             mapOf("client_id" to clientId)
         )
-        val expiresIn = response.getLong("expires_in")
+        throwIfOAuthError(response, "GitHub authorization failed.")
+
+        val deviceCode = response.optString("device_code")
+        val userCode = response.optString("user_code")
+        val verificationUri = response.optString("verification_uri")
+        val expiresIn = response.optLong("expires_in", 0L)
+        check(
+            deviceCode.isNotBlank() &&
+                userCode.isNotBlank() &&
+                verificationUri.isNotBlank() &&
+                expiresIn > 0L
+        ) { "GitHub returned an incomplete device sign-in response. Try again." }
+
         GitHubDeviceCode(
-            deviceCode = response.getString("device_code"),
-            userCode = response.getString("user_code"),
-            verificationUri = response.getString("verification_uri"),
+            deviceCode = deviceCode,
+            userCode = userCode,
+            verificationUri = verificationUri,
             expiresAtMillis = now + expiresIn * 1_000L,
             intervalSeconds = response.optLong("interval", 5L).coerceAtLeast(1L)
         )
@@ -92,6 +104,21 @@ class GitHubDeviceAuth(private val clientId: String) {
 
     private fun requireConfigured() {
         check(clientId.isNotBlank()) { "GitHub App authentication is not configured in this build." }
+    }
+
+    private fun throwIfOAuthError(response: JSONObject, fallback: String) {
+        val errorCode = response.optString("error")
+        if (errorCode.isBlank()) return
+
+        val message = when (errorCode) {
+            "device_flow_disabled" ->
+                "Device Flow is not enabled for the Library GitHub App. Enable Device Flow in the GitHub App settings."
+            "incorrect_client_credentials" ->
+                "This build has an invalid GitHub App client ID. Check the Library GitHub App configuration."
+            else -> response.optString("error_description").takeIf { it.isNotBlank() }
+                ?: "$fallback ($errorCode)"
+        }
+        error(message)
     }
 
     private fun sessionFrom(response: JSONObject): GitHubAuthSession {
