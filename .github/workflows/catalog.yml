@@ -1,6 +1,16 @@
 name: Refresh Catalog
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/catalog.yml'
+      - 'catalog/**'
+      - 'config/**'
+      - 'scripts/build_catalog.py'
+      - 'scripts/sync_github.py'
+      - 'scripts/sync_github_installation.py'
+      - 'scripts/validate_catalog.py'
   schedule:
     - cron: '0 */6 * * *'
   workflow_dispatch:
@@ -70,7 +80,7 @@ jobs:
         env:
           LIBRARY_GITHUB_TOKEN: ${{ steps.catalog-app.outputs.token }}
         run: |
-          python3 scripts/sync_github.py
+          python3 scripts/sync_github_installation.py
           python3 scripts/build_catalog.py
           python3 scripts/validate_catalog.py catalog/library.json
 
@@ -78,11 +88,33 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if ! gh release view catalog >/dev/null 2>&1; then
-            gh release create catalog --title "Library Catalog" --notes "Rolling machine-generated Library catalog."
-          fi
           cp catalog/library.json "$RUNNER_TEMP/catalog.json"
-          gh release upload catalog "$RUNNER_TEMP/catalog.json" --clobber
+
+          if gh release view catalog --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload catalog "$RUNNER_TEMP/catalog.json" \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber
+          else
+            gh release create catalog "$RUNNER_TEMP/catalog.json" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "Library Catalog" \
+              --notes "Rolling machine-generated Library catalog."
+          fi
+
+      - name: Verify published catalog release
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERIFY_DIR="$RUNNER_TEMP/catalog-release-verify"
+          rm -rf "$VERIFY_DIR"
+          mkdir -p "$VERIFY_DIR"
+          gh release download catalog \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern catalog.json \
+            --dir "$VERIFY_DIR"
+          cmp catalog/library.json "$VERIFY_DIR/catalog.json"
+          echo "Verified rolling catalog release contains the generated catalog.json"
 
       - name: Upload catalog workflow artifact
         uses: actions/upload-artifact@v4
