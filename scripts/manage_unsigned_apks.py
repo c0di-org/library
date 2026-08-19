@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sign centrally allowlisted unsigned Android CI artifacts and publish Releases."""
+"""Sign the exact unsigned APK artifact selected by Library's automation GitHub App."""
 from __future__ import annotations
 
 import argparse
@@ -45,7 +45,13 @@ class GitHub:
             raise SystemExit("LIBRARY_GITHUB_TOKEN is required for managed signing")
         self.download_opener = urllib.request.build_opener(NoAuthCrossHostRedirect())
 
-    def request(self, url: str, accept: str = "application/vnd.github+json", method: str = "GET", data: bytes | None = None):
+    def request(
+        self,
+        url: str,
+        accept: str = "application/vnd.github+json",
+        method: str = "GET",
+        data: bytes | None = None,
+    ):
         return urllib.request.Request(
             url,
             data=data,
@@ -53,7 +59,7 @@ class GitHub:
             headers={
                 "Accept": accept,
                 "Authorization": f"Bearer {self.token}",
-                "User-Agent": "garfbargle/library-managed-signing",
+                "User-Agent": "c0di-org/library-managed-signing",
                 "X-GitHub-Api-Version": "2022-11-28",
             },
         )
@@ -177,20 +183,6 @@ def inspect_release_apk(path: Path, aapt2: str):
     return match.group(1), int(match.group(2)), match.group(3) or match.group(2)
 
 
-def latest_artifact(gh: GitHub, repo: dict, branch: str, artifact_name: str):
-    runs = gh.json(
-        f"{API}/repos/{repo['full_name']}/actions/runs?branch={urllib.parse.quote(branch)}&status=success&per_page=20"
-    ).get("workflow_runs", [])
-    for run in runs:
-        if run.get("head_branch") != branch or run.get("event") in {"pull_request", "pull_request_target"}:
-            continue
-        artifacts = gh.json(f"{API}/repos/{repo['full_name']}/actions/runs/{run['id']}/artifacts?per_page=100").get("artifacts", [])
-        for artifact in artifacts:
-            if artifact.get("name") == artifact_name and not artifact.get("expired"):
-                return run, artifact
-    return None, None
-
-
 def stable_releases(gh: GitHub, repo: dict):
     return [
         release
@@ -213,15 +205,83 @@ def source_artifact_already_published(releases: list[dict], artifact_id: int):
     return any(marker in (release.get("body") or "") for release in releases)
 
 
-def sign_one(gh: GitHub, repo: dict, app: dict, tools: dict, keystore: Path, args):
-    expected_package = app["packageName"]
-    branch = app.get("branch") or repo.get("default_branch")
-    artifact_name = app.get("artifact") or DEFAULT_ARTIFACT
-    run, artifact = latest_artifact(gh, repo, branch, artifact_name)
-    if not artifact:
-        print(f"- {repo['full_name']}: no successful {artifact_name} artifact on {branch}")
-        return False
+def required_source_context() -> tuple[str, int, int, str]:
+    repository = os.environ.get("SOURCE_REPOSITORY", "").strip()
+    run_raw = os.environ.get("SOURCE_RUN_ID", "").strip()
+    artifact_raw = os.environ.get("SOURCE_ARTIFACT_ID", "").strip()
+    head_sha = os.environ.get("SOURCE_HEAD_SHA", "").strip()
 
+    missing = [
+        name
+        for name, value in (
+            ("SOURCE_REPOSITORY", repository),
+            ("SOURCE_RUN_ID", run_raw),
+            ("SOURCE_ARTIFACT_ID", artifact_raw),
+            ("SOURCE_HEAD_SHA", head_sha),
+        )
+        if not value
+    ]
+    if missing:
+        raise SystemExit(
+            "managed signing requires exact webhook context; missing: " + ", ".join(missing)
+        )
+    split_repo(repository)
+    if not run_raw.isdigit() or int(run_raw) <= 0:
+        raise SystemExit("SOURCE_RUN_ID must be a positive integer")
+    if not artifact_raw.isdigit() or int(artifact_raw) <= 0:
+        raise SystemExit("SOURCE_ARTIFACT_ID must be a positive integer")
+    if not re.fullmatch(r"[0-9A-Fa-f]{40}", head_sha):
+        raise SystemExit("SOURCE_HEAD_SHA must be a 40-character commit SHA")
+    return repository, int(run_raw), int(artifact_raw), head_sha.lower()
+
+
+def requested_run_and_artifact(
+    gh: GitHub,
+    repo: dict,
+    app: dict,
+    run_id: int,
+    artifact_id: int,
+    head_sha: str,
+):
+    expected_branch = app.get("branch") or repo.get("default_branch")
+    expected_artifact = app.get("artifact") or DEFAULT_ARTIFACT
+
+    run = gh.json(f"{API}/repos/{repo['full_name']}/actions/runs/{run_id}")
+    if int(run.get("id", 0)) != run_id:
+        raise ValueError(f"workflow run mismatch: expected {run_id}")
+    if run.get("conclusion") != "success":
+        raise ValueError(f"workflow run {run_id} did not complete successfully")
+    if run.get("event") in {"pull_request", "pull_request_target"}:
+        raise ValueError(f"workflow run {run_id} came from a pull-request event")
+    if run.get("head_branch") != expected_branch:
+        raise ValueError(e
+            f"workflow run {run_id} is on {run.get('head_branch')}r; expected branch {expected_branch!r}"
+         )
+    actual_head = str(run.get("head_sha") or "").lower()
+    if actual_head != head_sha:
+        raise ValueError(f"workflow run {run_id} head SHA does not match webhook source commit")
+
+    artifact_page = gh.json(f"{API}/repos/{repo['full_name']}/actions/runs/{run_id}/artifacts?per_page=100")
+    artifact = next(
+        (item for item in artifact_page.get("artifacts", []) if int(item.get("id", 0)) == artifact_id),
+        None,
+    )
+    if artifact is None:
+        raise ValueError(f"artifact {artifact_id} does not belong to workflow run {run_id}")
+    if artifact.get("expired"):
+        raise ValueError(f"artifact {artifact_id} is expired")
+    if artifact.get("name") != expected_artifact:
+        raise ValueError(
+            f"artifact {artifact_id} is named {artifact.get('name')!r}; expected {expected_artifact!r}"
+        )
+    if not artifact.get("archive_download_url"):
+        raise ValueError(f"artifact {artifact_id} has no archive download URL"})
+
+    return run, artifact
+
+
+def sign_one(gh: GitHub, repo: dict, app: dict, run: dict, artifact: dict, tools: dict, keystore: Path, args):
+    expected_package = app["packageName"]
     releases = stable_releases(gh, repo)
     if source_artifact_already_published(releases, artifact["id"]):
         print(f"- {repo['full_name']}: artifact {artifact['id']} already published")
@@ -250,7 +310,10 @@ def sign_one(gh: GitHub, repo: dict, app: dict, tools: dict, keystore: Path, arg
                 except Exception as exc:
                     print(f"! {repo['full_name']}: could not inspect existing release asset {asset.get('name')}: {exc}")
         if version_code <= highest_version_code:
-            print(f"- {repo['full_name']}: versionCode {version_code} is not newer than published {highest_version_code}; skipping")
+            print(
+                f"- {repo['full_name']}: versionCode {version_code} is not newer than "
+                f"published {highest_version_code}; skipping"
+            )
             return False
 
         tag = app.get("tagPrefix", "v") + version_name
@@ -295,6 +358,7 @@ def sign_one(gh: GitHub, repo: dict, app: dict, tools: dict, keystore: Path, arg
                 "",
                 f"Library source repository: {repo['full_name']}",
                 f"Library source commit: {run['head_sha']}",
+                f"Library source workflow run: {run['id']}",
                 marker,
                 f"Unsigned SHA-256: {unsigned_sha}",
                 f"Signed SHA-256: {signed_sha}",
@@ -303,10 +367,14 @@ def sign_one(gh: GitHub, repo: dict, app: dict, tools: dict, keystore: Path, arg
         )
 
         if args.dry_run:
-            print(f"+ dry-run {repo['full_name']}: {package} {version_name} ({version_code}) <- artifact {artifact['id']}")
+            print(
+                f"+ dry-run {repo['full_name']}: {package} {version_name} ({version_code}) "
+                f"<- run {run['id']} artifact {artifact['id']}"
+            )
             return True
 
-        release = gh.create_release(repo, tag, f"{repo['name']} {version_name}", body, branch)
+        # Pin the release tag to the exact commit that produced the validated artifact.
+        release = gh.create_release(repo, tag, f"{repo['name']} {version_name}", body, run["head_sha"])
         gh.upload_release_asset(release["upload_url"], signed.name, signed, "application/vnd.android.package-archive")
         sums = temp / "SHA256SUMS.txt"
         sums.write_text(f"{signed_sha}  {signed.name}\n")
@@ -318,6 +386,7 @@ def sign_one(gh: GitHub, repo: dict, app: dict, tools: dict, keystore: Path, arg
                     "kind": "library-managed",
                     "sourceRepository": repo["full_name"],
                     "sourceCommit": run["head_sha"],
+                    "sourceWorkflowRunId": run["id"],
                     "sourceArtifactId": artifact["id"],
                     "unsignedSha256": unsigned_sha,
                     "signedSha256": signed_sha,
@@ -331,7 +400,9 @@ def sign_one(gh: GitHub, repo: dict, app: dict, tools: dict, keystore: Path, arg
             + "\n"
         )
         gh.upload_release_asset(release["upload_url"], provenance.name, provenance, "application/json")
-        print(f"+ {repo['full_name']}: published {tag} from artifact {artifact['id']}")
+        print(
+            f"+ {repo['full_name']}: published {tag} from run {run['id']} artifact {artifact['id']}"
+        )
         return True
 
 
@@ -346,6 +417,8 @@ def main():
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
+    source_repository, run_id, artifact_id, head_sha = required_source_context()
+
     for name in ("token", "keystore", "store_password", "key_alias", "key_password"):
         if not getattr(args, name):
             raise SystemExit(f"missing required managed-signing setting: {name}")
@@ -355,23 +428,26 @@ def main():
         raise SystemExit(f"keystore does not exist: {keystore}")
 
     apps = load_config(args.config)
+    if len(apps) != 1:
+        raise SystemExit(
+            "managed signing requires exactly one resolved app; "
+            "the polling/batch signing path is no longer supported"
+        )
+    app = apps[0]
+    if str(app.get("repository") or "").lower() != source_repository.lower():
+        raise SystemExit(
+            f"resolved app {app.get('repository')!r} does not match SOURCE_REPOSITORY {source_repository!r}"
+        )
+
     tools = {name: tool(name) for name in ("aapt2", "apksigner", "zipalign")}
     gh = GitHub(args.token)
-    published = 0
-    failures = 0
-    for app in apps:
-        try:
-            repo = gh.repo(app["repository"])
-            if repo.get("archived") or repo.get("fork"):
-                raise ValueError("managed repository is archived or a fork")
-            if sign_one(gh, repo, app, tools, keystore, args):
-                published += 1
-        except Exception as exc:
-            failures += 1
-            print(f"! {app.get('repository', '<unknown>')}: {exc}")
-    print(f"managed signing complete: {published} published, {failures} failed")
-    if failures:
-        raise SystemExit(1)
+    repo = gh.repo(source_repository)
+    if repo.get("archived") or repo.get("fork"):
+        raise SystemExit(f"{source_repository}: managed repository is archived or a fork")
+
+    run, artifact = requested_run_and_artifact(gh, repo, app, run_id, artifact_id, head_sha)
+    published = sign_one(gh, repo, app, run, artifact, tools, keystore, args)
+    print(f"managed signing complete: {'published' if published else 'no new release'}")
 
 
 if __name__ == "__main__":

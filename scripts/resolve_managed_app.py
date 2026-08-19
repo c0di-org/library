@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve one managed-signing request from central config or source .library.json."""
+"""Resolve one event-driven managed-signing request from central config or source .library.json."""
 from __future__ import annotations
 
 import base64
@@ -32,7 +32,7 @@ def request_json(token: str, url: str) -> dict:
         headers={
             "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {token}",
-            "User-Agent": "garfbargle/library-managed-enrollment",
+            "User-Agent": "c0di-org/library-managed-enrollment",
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )
@@ -62,14 +62,11 @@ def source_metadata(token: str, repository: str, ref: str) -> dict:
 
 def repo_side_app(token: str, repository: str, ref: str) -> dict:
     owner, name = split_repo(repository)
-    expected_owner = os.environ.get("LIBRARY_GITHUB_OWNER", "garfbargle")
+    expected_owner = os.environ.get("LIBRARY_GITHUB_OWNER", "c0di-org")
     if owner.lower() != expected_owner.lower():
         raise ValueError(f"{repository}: repo-side managed signing is limited to owner {expected_owner}")
 
-    repo = request_json(
-        token,
-        f"{API}/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(name)}",
-    )
+    repo = request_json(token, f"{API}/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(name)}")
     if repo.get("archived") or repo.get("fork"):
         raise ValueError(f"{repository}: archived/fork repositories cannot self-enroll")
 
@@ -89,17 +86,11 @@ def repo_side_app(token: str, repository: str, ref: str) -> dict:
         raise ValueError(f"{repository}: repository has no default branch")
     requested_branch = str(signing.get("branch") or branch).strip()
     if requested_branch != branch:
-        raise ValueError(
-            f"{repository}: repo-side managed signing must use default branch {branch}; "
-            "use config/managed-apps.json for a custom branch"
-        )
+        raise ValueError(f"{repository}: repo-side managed signing must use default branch {branch}; use config/managed-apps.json for a custom branch")
 
     requested_artifact = str(signing.get("artifact") or DEFAULT_ARTIFACT).strip()
     if requested_artifact != DEFAULT_ARTIFACT:
-        raise ValueError(
-            f"{repository}: repo-side managed signing must use artifact {DEFAULT_ARTIFACT}; "
-            "use config/managed-apps.json for a custom artifact"
-        )
+        raise ValueError(f"{repository}: repo-side managed signing must use artifact {DEFAULT_ARTIFACT}; use config/managed-apps.json for a custom artifact")
 
     tag_prefix = str(signing.get("tagPrefix") or DEFAULT_TAG_PREFIX).strip()
     if not tag_prefix:
@@ -114,42 +105,51 @@ def repo_side_app(token: str, repository: str, ref: str) -> dict:
     }
 
 
+def required_source_context() -> tuple[str, str, str, str]:
+    values = {
+        "SOURCE_REPOSITORY": os.environ.get("SOURCE_REPOSITORY", "").strip(),
+        "SOURCE_RUN_ID": os.environ.get("SOURCE_RUN_ID", "").strip(),
+        "SOURCE_ARTIFACT_ID": os.environ.get("SOURCE_ARTIFACT_ID", "").strip(),
+        "SOURCE_HEAD_SHA": os.environ.get("SOURCE_HEAD_SHA", "").strip(),
+    }
+    missing = [name for name, value in values.items() if not value]
+    if missing:
+        raise SystemExit("managed signing is event-driven; missing required webhook context: " + ", ".join(missing))
+    if not values["SOURCE_RUN_ID"].isdigit() or int(values["SOURCE_RUN_ID"]) <= 0:
+        raise SystemExit("SOURCE_RUN_ID must be a positive integer")
+    if not values["SOURCE_ARTIFACT_ID"].isdigit() or int(values["SOURCE_ARTIFACT_ID"]) <= 0:
+        raise SystemExit("SOURCE_ARTIFACT_ID must be a positive integer")
+    if not re.fullmatch(r"[0-9A-Fa-f]{40}", values["SOURCE_HEAD_SHA"]):
+        raise SystemExit("SOURCE_HEAD_SHA must be a 40-character commit SHA")
+    return (
+        values["SOURCE_REPOSITORY"],
+        values["SOURCE_RUN_ID"],
+        values["SOURCE_ARTIFACT_ID"],
+        values["SOURCE_HEAD_SHA"],
+    )
+
+
 def main() -> None:
+    target, run_id, artifact_id, head_sha = required_source_context()
     root = json.loads(CONFIG.read_text())
     apps = root.get("apps", [])
-    target = os.environ.get("SOURCE_REPOSITORY", "").strip()
 
-    if not target:
-        print(f"manual managed-signing catch-up: {len(apps)} centrally enrolled app(s)")
-        with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-            output.write(f"enabled={'true' if apps else 'false'}\n")
-        return
-
-    selected = [
-        app for app in apps
-        if str(app.get("repository", "")).lower() == target.lower()
-    ]
+    selected = [app for app in apps if str(app.get("repository", "")).lower() == target.lower()]
     enrollment = "central"
     if not selected:
         token = os.environ.get("LIBRARY_GITHUB_TOKEN", "").strip()
-        ref = os.environ.get("SOURCE_HEAD_SHA", "").strip()
         if not token:
             raise SystemExit("LIBRARY_GITHUB_TOKEN is required for repo-side managed signing")
-        if not ref:
-            raise SystemExit("SOURCE_HEAD_SHA is required for repo-side managed signing")
-        selected = [repo_side_app(token, target, ref)]
+        selected = [repo_side_app(token, target, head_sha)]
         enrollment = "repository"
+
+    if len(selected) != 1:
+        raise SystemExit(f"{target}: managed-signing enrollment must resolve to exactly one app")
 
     root["apps"] = selected
     CONFIG.write_text(json.dumps(root, indent=2) + "\n")
-    print(
-        f"managed signing requested by {target} via {enrollment} enrollment "
-        f"(run {os.environ.get('SOURCE_RUN_ID') or '?'}, "
-        f"artifact {os.environ.get('SOURCE_ARTIFACT_ID') or '?'}, "
-        f"commit {os.environ.get('SOURCE_HEAD_SHA') or '?'})"
-    )
+    print(f"managed signing requested by {target} via {enrollment} enrollment (run {run_id}, artifact {artifact_id}, commit {head_sha})")
     with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-        output.write("enabled=true\n")
         output.write(f"enrollment={enrollment}\n")
 
 
