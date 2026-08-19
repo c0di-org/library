@@ -9,6 +9,17 @@ Library separates four security roles:
 
 The Library application key and the managed-app distribution key are never interchangeable.
 
+## Product ownership
+
+The automation GitHub App owns **event routing**, not APK or catalog generation. GitHub Actions workflows remain the protected executors for signing, validation, and release publication.
+
+The two Library products have independent release lifecycles:
+
+- **Library Android app** — versioned `vX.Y.Z` releases containing only the signed Library APK and checksum. Its build embeds the latest already-published rolling catalog as an offline fallback, but it does not rebuild or publish catalog data.
+- **Library catalog** — the rolling `catalog` release containing `catalog.json`. `catalog.yml` is the only workflow that publishes this product.
+
+Normal updates are event-driven through the GitHub App. The catalog's six-hour schedule exists only as recovery reconciliation if a Release webhook is missed.
+
 ## Event-driven managed signing
 
 ```text
@@ -59,6 +70,8 @@ Both signing models converge on GitHub Releases:
 developer-signed APK Release ────────┐
                                      │
 Library-managed signed APK Release ──┤
+                                     │
+Library Android APK Release ─────────┤
                                      ▼
                               release webhook
                                      │
@@ -69,7 +82,7 @@ Library-managed signed APK Release ──┤
                               catalog.yml
                                      │
                                      ▼
-                         scripts/sync_github.py
+                 installation-aware release discovery
                          ├─ download exact APK
                          ├─ package/version/sdk/ABI
                          ├─ signing certificate
@@ -85,17 +98,18 @@ Library-managed signed APK Release ──┤
                          └─ app/src/main/assets/catalog.json
                                      │
                                      ▼
-                         rolling Release: catalog.json
+                    rolling Release tag: catalog
+                           asset: catalog.json
                                      │
                                      ▼
                          Android Library client
 ```
 
-Release webhooks are the normal trigger. `catalog.yml` also runs every six hours as a recovery reconciliation in case a Release webhook was missed; that schedule never signs workflow artifacts.
+Release webhooks are the normal trigger. The Worker deliberately ignores the rolling `catalog` release itself so catalog publication cannot recursively trigger another refresh. `catalog.yml` also runs every six hours as a recovery reconciliation in case a Release webhook was missed; that schedule never signs workflow artifacts.
 
 ## Public and private apps
 
-Public releases work anonymously. Catalog discovery can use a short-lived GitHub App installation token for repositories visible to the configured Catalog App. Library-managed signing uses the protected signing credential only inside the Library production environment to read the selected artifact and publish the resulting release.
+Public releases work anonymously. Catalog discovery uses a short-lived GitHub App installation token for repositories visible to the configured Catalog App and merges those repositories with public discovery. Library-managed signing uses the protected signing credential only inside the Library production environment to read the selected artifact and publish the resulting release.
 
 On Android, GitHub App Device Flow gives a signed-in user access only to repositories that both the user and the App installation can reach. Library stores the resulting session using Android Keystore. Authorization is sent only to `api.github.com` and is not forwarded to release-CDN redirects.
 
