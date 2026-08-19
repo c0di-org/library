@@ -36,6 +36,7 @@ on:
 
 permissions:
   contents: write
+  statuses: write
 
 concurrency:
   group: library-catalog
@@ -124,3 +125,26 @@ jobs:
           name: library-catalog-${{ github.run_id }}
           path: catalog/library.json
           retention-days: 14
+
+      - name: Record catalog publication status
+        if: ${{ always() && github.event_name == 'push' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          STATE=failure
+          DESCRIPTION="Rolling catalog refresh failed"
+          if [[ "$JOB_STATUS" == "success" ]]; then
+            STATE=success
+            DESCRIPTION="Rolling catalog.json published and verified"
+          elif [[ "$JOB_STATUS" == "cancelled" ]]; then
+            STATE=error
+            DESCRIPTION="Rolling catalog refresh cancelled"
+          fi
+          gh api --method POST \
+            "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
+            -f state="$STATE" \
+            -f context="library/catalog-publish" \
+            -f description="$DESCRIPTION"
