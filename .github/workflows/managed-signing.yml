@@ -4,20 +4,20 @@ on:
   workflow_dispatch:
     inputs:
       source_repository:
-        description: Managed repository whose build produced an unsigned APK
-        required: false
+        description: Managed repository whose completed workflow produced the unsigned APK
+        required: true
         type: string
       source_run_id:
-        description: Source workflow run ID that produced the artifact
-        required: false
+        description: Exact source workflow run ID validated by the automation GitHub App
+        required: true
         type: string
       source_artifact_id:
-        description: Source unsigned APK artifact ID
-        required: false
+        description: Exact unsigned APK artifact ID validated by the automation GitHub App
+        required: true
         type: string
       source_head_sha:
-        description: Source commit whose .library.json declares repo-side enrollment
-        required: false
+        description: Exact source commit for the validated workflow run
+        required: true
         type: string
       delivery_id:
         description: GitHub webhook delivery ID
@@ -55,14 +55,11 @@ jobs:
         run: python3 scripts/resolve_managed_app.py
 
       - uses: android-actions/setup-android@v3
-        if: steps.enrollment.outputs.enabled == 'true'
 
       - name: Install APK signing tools
-        if: steps.enrollment.outputs.enabled == 'true'
         run: sdkmanager "build-tools;36.0.0"
 
       - name: Require managed-signing secrets
-        if: steps.enrollment.outputs.enabled == 'true'
         shell: bash
         env:
           KEYSTORE_BASE64: ${{ secrets.LIBRARY_DISTRIBUTION_KEYSTORE_BASE64 }}
@@ -78,15 +75,5 @@ jobs:
           chmod 600 "$RUNNER_TEMP/library-distribution.jks"
           echo "LIBRARY_DISTRIBUTION_KEYSTORE_FILE=$RUNNER_TEMP/library-distribution.jks" >> "$GITHUB_ENV"
 
-      - name: Sign and publish requested app artifact
-        if: steps.enrollment.outputs.enabled == 'true'
+      - name: Sign and publish validated source artifact
         run: python3 scripts/manage_unsigned_apks.py
-
-      - name: Verify refreshed catalog after publication
-        if: steps.enrollment.outputs.enabled == 'true'
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          python3 scripts/sync_github.py
-          python3 scripts/build_catalog.py
-          python3 scripts/validate_catalog.py catalog/library.json

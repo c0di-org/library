@@ -1,70 +1,110 @@
 # Architecture
 
-Library keeps four identities separate:
+Library separates four security roles:
 
-1. **Store identity** — the stable release-signing key for the Library Android client.
-2. **App identity** — the signing certificate belonging to each Android package.
-3. **Build identity** — an isolated builder, only relevant for future Library-built apps.
-4. **Distribution identity** — GitHub Releases/catalog infrastructure serving the bytes.
+1. **Library app identity** — the stable Android signing key for the Library client itself.
+2. **Managed-app distribution identity** — the separate signing key used for apps that explicitly opt into Library-managed signing. Managed apps currently share this distribution identity.
+3. **Developer app identities** — developer-signed apps keep their own signing certificates; Library never re-signs those APK bytes.
+4. **Automation/distribution identity** — the GitHub App, protected workflows, GitHub Releases, and rolling catalog that move verified bytes and metadata between repositories and devices.
 
-Library never uses one universal signing key for every app.
+The Library application key and the managed-app distribution key are never interchangeable.
 
-## Flow
+## Event-driven managed signing
 
 ```text
-GitHub stable Releases (*.apk)
+source app workflow completes successfully
         │
         ▼
-scripts/sync_github.py
-        ├─ downloads exact APK
-        ├─ aapt2: package/version/sdk/ABI metadata
-        ├─ apksigner: signer certificate
-        ├─ SHA-256: exact bytes
-        └─ optional .library.json metadata
+GitHub workflow_run webhook
         │
         ▼
-catalog/apps/generated/*.json
+automation GitHub App / Worker
+        ├─ verify webhook signature
+        ├─ require configured source owner
+        ├─ reject PR/failed/wrong-branch runs
+        ├─ resolve central config or repo-side candidate
+        └─ require expected unexpired Actions artifact
         │
         ▼
-scripts/build_catalog.py
-        │
-        ├─ catalog/library.json
-        └─ app/src/main/assets/catalog.json
+dispatch managed-signing.yml
+(repo + run ID + artifact ID + source SHA)
         │
         ▼
-GitHub Release tag: catalog
+protected enrollment resolution
+        ├─ central hard pin, or
+        └─ .library.json read from exact source SHA
         │
         ▼
-Android Library client
-        ├─ compare installed versionCode
-        ├─ choose compatible artifact
-        ├─ download over HTTPS
-        ├─ verify SHA-256
-        ├─ verify package + versionCode
-        ├─ verify APK signing certificate
-        └─ stage PackageInstaller session
+manage_unsigned_apks.py
+        ├─ re-fetch exact workflow run
+        ├─ re-fetch exact artifact
+        ├─ require matching branch/SHA/name
+        ├─ require unsigned standalone APK
+        ├─ verify package + increasing versionCode
+        ├─ align + sign with managed distribution key
+        └─ verify final signature and hashes
+        │
+        ▼
+stable GitHub Release in source repository
+(targeted at the exact source SHA)
 ```
+
+The signer does not enumerate recent workflow runs and does not choose a "latest" artifact. The source run/artifact/SHA tuple selected by the webhook is part of the protected signing boundary.
+
+## Release-driven catalog reconciliation
+
+Both signing models converge on GitHub Releases:
+
+```text
+developer-signed APK Release ────────┐
+                                     │
+Library-managed signed APK Release ──┤
+                                     ▼
+                              release webhook
+                                     │
+                                     ▼
+                         automation GitHub App
+                                     │
+                                     ▼
+                              catalog.yml
+                                     │
+                                     ▼
+                         scripts/sync_github.py
+                         ├─ download exact APK
+                         ├─ package/version/sdk/ABI
+                         ├─ signing certificate
+                         ├─ SHA-256 exact bytes
+                         └─ optional .library.json
+                                     │
+                                     ▼
+                         catalog/apps/generated/*.json
+                                     │
+                                     ▼
+                         scripts/build_catalog.py
+                         ├─ catalog/library.json
+                         └─ app/src/main/assets/catalog.json
+                                     │
+                                     ▼
+                         rolling Release: catalog.json
+                                     │
+                                     ▼
+                         Android Library client
+```
+
+Release webhooks are the normal trigger. `catalog.yml` also runs every six hours as a recovery reconciliation in case a Release webhook was missed; that schedule never signs workflow artifacts.
 
 ## Public and private apps
 
-Public releases work anonymously. For private repositories, CI uses `LIBRARY_GITHUB_TOKEN` with read-only access to the repositories being indexed. On Android, the user can provide a fine-grained GitHub token; Library encrypts it with an AES-GCM key generated inside Android Keystore. Authorization is only sent to `api.github.com` and is deliberately not forwarded to release-CDN redirects.
+Public releases work anonymously. Catalog discovery can use a short-lived GitHub App installation token for repositories visible to the configured Catalog App. Library-managed signing uses the protected signing credential only inside the Library production environment to read the selected artifact and publish the resulting release.
 
-The bundled catalog lets the app start offline. Live refresh reads the rolling `catalog` GitHub Release.
+On Android, GitHub App Device Flow gives a signed-in user access only to repositories that both the user and the App installation can reach. Library stores the resulting session using Android Keystore. Authorization is sent only to `api.github.com` and is not forwarded to release-CDN redirects.
+
+The bundled catalog lets the client start offline. Normal live refresh reads the rolling `catalog` GitHub Release.
 
 ## Release selection
 
-Discovery intentionally ignores drafts, prereleases, repos with no APK release, and split APK fragments. All accepted APKs in one release must agree on package name, versionCode, and signer. Version metadata comes from the APK manifest rather than tag naming.
+Discovery ignores drafts, prereleases by default, repositories with no qualifying APK release, and split APK fragments. All accepted APKs in one release must agree on package name, versionCode, signer, and version name. Version metadata comes from the APK manifest rather than tag naming.
 
 ## Update safety
 
 Library compares catalog `versionCode` with the installed package. Before staging an update it checks the installed signer against the pinned signer, then verifies the downloaded SHA-256, package ID, versionCode, and certificate. Android performs its own signature/update verification again when the PackageInstaller session commits.
-
-## Future source builds
-
-A future build service should use:
-
-```text
-source ref -> isolated builder -> unsigned digest -> signing service -> signed APK
-```
-
-The signing service must map one Android package to one dedicated key. Build workers must never receive private signing keys.
