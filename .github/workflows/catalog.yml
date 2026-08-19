@@ -1,6 +1,7 @@
 name: Refresh Catalog
 
 on:
+  # Repository changes that affect catalog generation exercise the publisher immediately.
   push:
     branches: [main]
     paths:
@@ -11,6 +12,7 @@ on:
       - 'scripts/sync_github.py'
       - 'scripts/sync_github_installation.py'
       - 'scripts/validate_catalog.py'
+  # Recovery only. Normal app updates arrive from the GitHub App via workflow_dispatch.
   schedule:
     - cron: '0 */6 * * *'
   workflow_dispatch:

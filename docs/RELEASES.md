@@ -41,7 +41,11 @@ Public repositories can still be cataloged anonymously when they are not using m
 
 `gradle.properties` contains the single Library release version. Every push to `main` compares that version with the highest stable `vX.Y.Z` GitHub Release and publishes only when the version increases.
 
-The Library release contains its signed APK, `SHA256SUMS.txt`, and `catalog.json`.
+The versioned Library release contains only its signed APK and `SHA256SUMS.txt`. It does **not** publish or update the catalog.
+
+Before building the APK, the release workflow downloads the latest already-published rolling `catalog.json` and embeds it as the app's offline fallback. If no rolling catalog exists yet, it uses the checked-in fallback snapshot. This does not make the Library release workflow a catalog publisher.
+
+Publishing the Library APK emits the same Release webhook as any other app. The automation GitHub App then dispatches `catalog.yml`, which independently rebuilds the catalog and includes the newly published Library release.
 
 ## 5. Make an app produce an unsigned artifact
 
@@ -137,6 +141,15 @@ The release notes and provenance file record the source commit and source Action
 
 ## 8. Catalog refresh
 
-The catalog is refreshed by release webhooks and can also be manually dispatched. Developer-signed releases and Library-managed signed releases therefore converge into the same downstream catalog and install path without periodic polling.
+The automation GitHub App owns the normal event path. Any qualifying app Release — developer-signed, Library-managed, or Library itself — causes the webhook Worker to dispatch `catalog.yml`.
+
+`catalog.yml` is the **only** workflow that publishes the rolling catalog product. It scans the GitHub Releases visible to the Catalog App, rebuilds and validates the catalog, then updates the dedicated `catalog` Release asset:
+
+```text
+c0di-org/library release tag: catalog
+asset: catalog.json
+```
+
+That rolling catalog has its own lifecycle and is independent of Library `vX.Y.Z` APK releases. The six-hour catalog schedule remains only as recovery reconciliation for a missed Release webhook; it is not the normal update path and never signs app artifacts.
 
 For existing packages, do not switch signing identities casually: Android normally requires updates to use the existing signing identity unless a supported signing-key rotation path is configured.
