@@ -81,16 +81,6 @@ jobs:
         if: steps.version.outputs.should_release != 'true'
         run: echo "Skipping release because LIBRARY_VERSION is not higher than the latest published version."
 
-      - name: Mint Library Catalog App token
-        id: catalog-app
-        if: steps.version.outputs.should_release == 'true'
-        uses: actions/create-github-app-token@v3
-        with:
-          client-id: ${{ vars.LIBRARY_CATALOG_APP_CLIENT_ID }}
-          private-key: ${{ secrets.LIBRARY_CATALOG_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          permission-contents: read
-
       - uses: actions/setup-java@v5
         if: steps.version.outputs.should_release == 'true'
         with:
@@ -126,14 +116,28 @@ jobs:
           chmod 600 "$RUNNER_TEMP/library-release.jks"
           echo "LIBRARY_SIGNING_STORE_FILE=$RUNNER_TEMP/library-release.jks" >> "$GITHUB_ENV"
 
-      - name: Refresh catalog before build
+      - name: Bundle latest published catalog snapshot
         if: steps.version.outputs.should_release == 'true'
-        env:
-          LIBRARY_GITHUB_TOKEN: ${{ steps.catalog-app.outputs.token }}
+        shell: bash
         run: |
-          python3 scripts/sync_github.py
-          python3 scripts/build_catalog.py
-          python3 scripts/validate_catalog.py catalog/library.json
+          set -euo pipefail
+          mkdir -p app/src/main/assets
+
+          if gh release view catalog --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            SNAPSHOT_DIR="$RUNNER_TEMP/catalog-snapshot"
+            rm -rf "$SNAPSHOT_DIR"
+            mkdir -p "$SNAPSHOT_DIR"
+            gh release download catalog \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern catalog.json \
+              --dir "$SNAPSHOT_DIR"
+            python3 scripts/validate_catalog.py "$SNAPSHOT_DIR/catalog.json"
+            cp "$SNAPSHOT_DIR/catalog.json" app/src/main/assets/catalog.json
+            echo "Bundled the latest published rolling catalog as the offline fallback."
+          else
+            python3 scripts/validate_catalog.py app/src/main/assets/catalog.json
+            echo "No rolling catalog release exists yet; using the checked-in offline fallback."
+          fi
 
       - name: Lint, test, and build signed release
         if: steps.version.outputs.should_release == 'true'
@@ -161,7 +165,6 @@ jobs:
           mkdir -p dist
           cp "$APK" "dist/library-$VERSION.apk"
           (cd dist && sha256sum "library-$VERSION.apk" > SHA256SUMS.txt)
-          cp catalog/library.json dist/catalog.json
 
       - name: Publish versioned GitHub Release
         if: steps.version.outputs.should_release == 'true'
@@ -179,30 +182,7 @@ jobs:
             --generate-notes \
             --target "$GITHUB_SHA" \
             "dist/library-$VERSION.apk" \
-            dist/SHA256SUMS.txt \
-            dist/catalog.json
-
-      - name: Refresh catalog with the newly published Library APK
-        if: steps.version.outputs.should_release == 'true'
-        env:
-          LIBRARY_GITHUB_TOKEN: ${{ steps.catalog-app.outputs.token }}
-        run: |
-          python3 scripts/sync_github.py
-          python3 scripts/build_catalog.py
-          python3 scripts/validate_catalog.py catalog/library.json
-
-      - name: Publish rolling catalog
-        if: steps.version.outputs.should_release == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ! gh release view catalog >/dev/null 2>&1; then
-            gh release create catalog --title "Library Catalog" --notes "Rolling machine-generated Library catalog."
-          fi
-          cp catalog/library.json "$RUNNER_TEMP/catalog.json"
-          gh release upload catalog "$RUNNER_TEMP/catalog.json" --clobber
-          cp catalog/library.json dist/catalog.json
-          gh release upload "${{ steps.version.outputs.tag }}" dist/catalog.json --clobber
+            dist/SHA256SUMS.txt
 
       - name: Upload signed APK workflow artifact
         if: steps.version.outputs.should_release == 'true'
@@ -212,6 +192,5 @@ jobs:
           path: |
             dist/library-${{ steps.version.outputs.version }}.apk
             dist/SHA256SUMS.txt
-            dist/catalog.json
           if-no-files-found: error
           retention-days: 30
