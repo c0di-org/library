@@ -41,9 +41,9 @@ Public repositories can still be cataloged anonymously when they are not using m
 
 `gradle.properties` contains the single Library release version. Every push to `main` compares that version with the highest stable `vX.Y.Z` GitHub Release and publishes only when the version increases.
 
-The versioned Library release contains only its signed APK and `SHA256SUMS.txt`. It does **not** publish or update the catalog.
+The versioned Library release contains only its signed APK and `SHA256SUMS.txt`. It does **not** publish or update catalog releases.
 
-Before building the APK, the release workflow downloads the latest already-published rolling `catalog.json` and embeds it as the app's offline fallback. If no rolling catalog exists yet, it uses the checked-in fallback snapshot. This does not make the Library release workflow a catalog publisher.
+Before building the APK, the release workflow finds the newest already-published stable `catalog-*` release and embeds its `catalog.json` as the app's offline fallback. During migration it can fall back to the legacy `catalog` release; if neither exists, it uses the checked-in fallback snapshot.
 
 Publishing the Library APK emits the same Release webhook as any other app. The automation GitHub App then dispatches `catalog.yml`, which independently rebuilds the catalog and includes the newly published Library release.
 
@@ -143,13 +143,19 @@ The release notes and provenance file record the source commit and source Action
 
 The automation GitHub App owns the normal event path. Any qualifying app Release — developer-signed, Library-managed, or Library itself — causes the webhook Worker to dispatch `catalog.yml`.
 
-`catalog.yml` is the **only** workflow that publishes the rolling catalog product. It scans the GitHub Releases visible to the Catalog App, rebuilds and validates the catalog, then updates the dedicated `catalog` Release asset:
+`catalog.yml` is the **only** workflow that publishes the catalog product. It scans the GitHub Releases visible to the Catalog App, rebuilds and validates the catalog, then creates a new GitHub Release:
 
 ```text
-c0di-org/library release tag: catalog
+c0di-org/library release tag: catalog-<workflow-run-id>-<attempt>
 asset: catalog.json
 ```
 
-That rolling catalog has its own lifecycle and is independent of Library `vX.Y.Z` APK releases. The six-hour catalog schedule remains only as recovery reconciliation for a missed Release webhook; it is not the normal update path and never signs app artifacts.
+Catalog releases are immutable-style snapshots: a workflow run never overwrites an earlier catalog release. They are created with `--latest=false`, so Library `vX.Y.Z` remains the repository's normal Latest release.
+
+The deployed Worker entrypoint ignores Library's own `catalog` and `catalog-*` release webhooks, and `catalog.yml` independently skips self-triggered catalog release dispatches as defense in depth. This prevents catalog publication from causing a release loop.
+
+The Android client lists stable GitHub Releases and chooses the newest `catalog-*` release by publish time. The old mutable `catalog` release remains only as a migration fallback for older clients.
+
+The six-hour catalog schedule remains only as recovery reconciliation for a missed Release webhook; it is not the normal update path and never signs app artifacts.
 
 For existing packages, do not switch signing identities casually: Android normally requires updates to use the existing signing identity unless a supported signing-key rotation path is configured.
