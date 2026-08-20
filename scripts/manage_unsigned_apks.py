@@ -265,9 +265,9 @@ def requested_run_and_artifact(
     if run.get("event") in {"pull_request", "pull_request_target"}:
         raise ValueError(f"workflow run {run_id} came from a pull-request event")
     if run.get("head_branch") != expected_branch:
-        raise ValueError(e
-            f"workflow run {run_id} is on {run.get('head_branch')}r; expected branch {expected_branch!r}"
-         )
+        raise ValueError(
+            f"workflow run {run_id} is on {run.get('head_branch')!r}; expected branch {expected_branch!r}"
+        )
     actual_head = str(run.get("head_sha") or "").lower()
     if actual_head != head_sha:
         raise ValueError(f"workflow run {run_id} head SHA does not match webhook source commit")
