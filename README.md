@@ -35,15 +35,16 @@ flowchart TD
     N --> O[Dispatch catalog reconciliation]
     O --> P[sync_github.py inspects current stable APK Releases]
     P --> Q[build_catalog.py]
-    Q --> R[Rolling catalog Release: catalog.json]
-    R --> S[Android Library client]
+    Q --> R[Versioned catalog Release with catalog.json]
+    R --> S[Android Library client selects newest catalog release]
 ```
 
 The important boundaries are:
 
 - **Workflow webhook selection:** the Worker only dispatches managed signing for successful non-PR runs in the configured source owner, on the allowed branch, with the expected unexpired artifact.
 - **Exact-artifact signing:** the protected signing workflow receives the source repository, workflow run ID, artifact ID, and commit SHA. The signer re-fetches and verifies that exact run/artifact before touching the distribution key. There is no "find the latest artifact" fallback.
-- **Release-driven catalog updates:** publishing a signed release emits a normal GitHub Release webhook. Catalog reconciliation then rebuilds from GitHub Releases, so developer-signed and Library-managed apps converge on the same catalog path.
+- **Release-driven catalog updates:** publishing a signed release emits a normal GitHub Release webhook. Catalog reconciliation rebuilds from GitHub Releases and publishes a new `catalog-<run-id>-<attempt>` release containing `catalog.json`.
+- **No catalog recursion:** the Worker entrypoint ignores Library's own `catalog` and `catalog-*` release events, and `catalog.yml` has an independent self-release guard.
 - **Recovery reconciliation:** `catalog.yml` also has a six-hour schedule as a safety net for missed release webhooks. It does not perform managed signing.
 
 ## Features
@@ -53,7 +54,7 @@ The important boundaries are:
 - Search, app details, release notes, and source links
 - Verifies package, version, APK SHA-256, and signer
 - Event-driven Library-managed signing for intentionally unsigned CI artifacts
-- Remote rolling catalog with a bundled offline fallback
+- Independent versioned catalog releases with a bundled offline fallback
 
 ## Add an app
 
@@ -90,11 +91,11 @@ python3 scripts/build_catalog.py
 
 ## Automation components
 
-- `infra/catalog-webhook/` — verifies GitHub webhooks, checks candidate artifacts, and dispatches Library workflows.
+- `infra/catalog-webhook/` — verifies GitHub webhooks, checks candidate artifacts, prevents catalog-release feedback loops, and dispatches Library workflows.
 - `.github/workflows/managed-signing.yml` — protected entry point for one exact source artifact.
 - `scripts/resolve_managed_app.py` — resolves central or repository-side enrollment for the exact source commit.
 - `scripts/manage_unsigned_apks.py` — re-validates, signs, verifies, and publishes the exact artifact selected by the webhook.
-- `.github/workflows/catalog.yml` — full catalog reconciliation after releases, plus the periodic recovery safety net.
+- `.github/workflows/catalog.yml` — full catalog reconciliation and versioned catalog release publication, plus the periodic recovery safety net.
 - `scripts/sync_github.py` — authoritative filter for installable GitHub APK releases.
 
 ## Docs
