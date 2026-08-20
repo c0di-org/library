@@ -103,11 +103,12 @@ jobs:
         shell: bash
         env:
           KEYSTORE_BASE64: ${{ secrets.LIBRARY_KEYSTORE_BASE64 }}
+          RELEASE_TOKEN: ${{ secrets.LIBRARY_GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          for name in KEYSTORE_BASE64 LIBRARY_SIGNING_STORE_PASSWORD LIBRARY_SIGNING_KEY_ALIAS LIBRARY_SIGNING_KEY_PASSWORD; do
+          for name in KEYSTORE_BASE64 RELEASE_TOKEN LIBRARY_SIGNING_STORE_PASSWORD LIBRARY_SIGNING_KEY_ALIAS LIBRARY_SIGNING_KEY_PASSWORD; do
             if [[ -z "${!name:-}" ]]; then
-              echo "Missing required release-signing secret: $name" >&2
+              echo "Missing required release secret: $name" >&2
               exit 1
             fi
           done
@@ -177,6 +178,8 @@ jobs:
       - name: Publish versioned GitHub Release
         if: steps.version.outputs.should_release == 'true'
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.LIBRARY_GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           TAG="${{ steps.version.outputs.tag }}"
