@@ -5,7 +5,7 @@ Library separates four security roles:
 1. **Library app identity** — the stable Android signing key for the Library client itself.
 2. **Managed-app distribution identity** — the separate signing key used for apps that explicitly opt into Library-managed signing. Managed apps currently share this distribution identity.
 3. **Developer app identities** — developer-signed apps keep their own signing certificates; Library never re-signs those APK bytes.
-4. **Automation/distribution identity** — the GitHub App, protected workflows, GitHub Releases, and rolling catalog that move verified bytes and metadata between repositories and devices.
+4. **Automation/distribution identity** — the GitHub App, protected workflows, GitHub Releases, and catalog releases that move verified bytes and metadata between repositories and devices.
 
 The Library application key and the managed-app distribution key are never interchangeable.
 
@@ -15,8 +15,8 @@ The automation GitHub App owns **event routing**, not APK or catalog generation.
 
 The two Library products have independent release lifecycles:
 
-- **Library Android app** — versioned `vX.Y.Z` releases containing only the signed Library APK and checksum. Its build embeds the latest already-published rolling catalog as an offline fallback, but it does not rebuild or publish catalog data.
-- **Library catalog** — the rolling `catalog` release containing `catalog.json`. `catalog.yml` is the only workflow that publishes this product.
+- **Library Android app** — versioned `vX.Y.Z` releases containing only the signed Library APK and checksum. Its build embeds the newest already-published catalog as an offline fallback, but it does not rebuild or publish catalog data.
+- **Library catalog** — immutable versioned `catalog-<run-id>-<attempt>` releases containing only `catalog.json`. `catalog.yml` is the only workflow that publishes this product.
 
 Normal updates are event-driven through the GitHub App. The catalog's six-hour schedule exists only as recovery reconciliation if a Release webhook is missed.
 
@@ -98,14 +98,19 @@ Library Android APK Release ─────────┤
                          └─ app/src/main/assets/catalog.json
                                      │
                                      ▼
-                    rolling Release tag: catalog
-                           asset: catalog.json
+                 versioned catalog GitHub Release
+                 tag: catalog-<run-id>-<attempt>
+                         asset: catalog.json
                                      │
                                      ▼
                          Android Library client
 ```
 
-Release webhooks are the normal trigger. The Worker deliberately ignores the rolling `catalog` release itself so catalog publication cannot recursively trigger another refresh. `catalog.yml` also runs every six hours as a recovery reconciliation in case a Release webhook was missed; that schedule never signs workflow artifacts.
+Release webhooks are the normal trigger. The Worker entrypoint ignores Library's own `catalog` and `catalog-*` releases so catalog publication cannot recursively trigger another refresh. `catalog.yml` also contains a self-release guard as defense in depth.
+
+Each catalog workflow run publishes a new release rather than mutating an existing one. Catalog releases use `--latest=false`, so Library `vX.Y.Z` releases remain the repository's normal Latest release. The Android client lists published releases, selects the newest stable `catalog-*` release by publish time, and falls back to the legacy `catalog` release only during migration.
+
+`catalog.yml` also runs every six hours as a recovery reconciliation in case a Release webhook was missed; that schedule never signs workflow artifacts.
 
 ## Public and private apps
 
@@ -113,7 +118,7 @@ Public releases work anonymously. Catalog discovery uses a short-lived GitHub Ap
 
 On Android, GitHub App Device Flow gives a signed-in user access only to repositories that both the user and the App installation can reach. Library stores the resulting session using Android Keystore. Authorization is sent only to `api.github.com` and is not forwarded to release-CDN redirects.
 
-The bundled catalog lets the client start offline. Normal live refresh reads the rolling `catalog` GitHub Release.
+The bundled catalog lets the client start offline. Normal live refresh reads the newest published `catalog-*` GitHub Release.
 
 ## Release selection
 

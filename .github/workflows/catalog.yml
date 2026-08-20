@@ -44,6 +44,12 @@ concurrency:
 
 jobs:
   refresh:
+    # Defense in depth: the deployed webhook may still echo Library's own catalog
+    # release event back into this workflow. Never reconcile a catalog release.
+    if: >-
+      ${{ !(github.event_name == 'workflow_dispatch' &&
+            inputs.source_repository == github.repository &&
+            (inputs.release_tag == 'catalog' || startsWith(inputs.release_tag, 'catalog-'))) }}
     environment: production
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -87,64 +93,87 @@ jobs:
           python3 scripts/build_catalog.py
           python3 scripts/validate_catalog.py catalog/library.json
 
-      - name: Publish rolling catalog release
+      - name: Publish versioned catalog release
+        id: publish
         shell: bash
         run: |
           set -euo pipefail
+          CATALOG_TAG="catalog-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          GENERATED_AT="$(python3 - <<'PY'
+          import json
+          with open('catalog/library.json', encoding='utf-8') as handle:
+              print(json.load(handle)['generatedAt'])
+          PY
+          )"
           cp catalog/library.json "$RUNNER_TEMP/catalog.json"
 
-          if gh release view catalog --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload catalog "$RUNNER_TEMP/catalog.json" \
-              --repo "$GITHUB_REPOSITORY" \
-              --clobber
-          else
-            gh release create catalog "$RUNNER_TEMP/catalog.json" \
-              --repo "$GITHUB_REPOSITORY" \
-              --target "$GITHUB_SHA" \
-              --title "Library Catalog" \
-              --notes "Rolling machine-generated Library catalog."
+          if gh release view "$CATALOG_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Catalog release $CATALOG_TAG already exists; refusing to overwrite an immutable catalog release." >&2
+            exit 1
           fi
+
+          gh release create "$CATALOG_TAG" \
+            "$RUNNER_TEMP/catalog.json" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Library Catalog $GENERATED_AT" \
+            --notes "Machine-generated Library catalog from workflow run $GITHUB_RUN_ID attempt $GITHUB_RUN_ATTEMPT." \
+            --latest=false
+
+          echo "tag=$CATALOG_TAG" >> "$GITHUB_OUTPUT"
+          echo "Published immutable catalog release $CATALOG_TAG"
 
       - name: Verify published catalog release
         shell: bash
+        env:
+          CATALOG_TAG: ${{ steps.publish.outputs.tag }}
         run: |
           set -euo pipefail
+          test -n "$CATALOG_TAG"
           VERIFY_DIR="$RUNNER_TEMP/catalog-release-verify"
           rm -rf "$VERIFY_DIR"
           mkdir -p "$VERIFY_DIR"
-          gh release download catalog \
+          gh release download "$CATALOG_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --pattern catalog.json \
             --dir "$VERIFY_DIR"
           cmp catalog/library.json "$VERIFY_DIR/catalog.json"
-          echo "Verified rolling catalog release contains the generated catalog.json"
+          echo "Verified $CATALOG_TAG contains the generated catalog.json"
 
       - name: Upload catalog workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: library-catalog-${{ github.run_id }}
+          name: library-catalog-${{ github.run_id }}-${{ github.run_attempt }}
           path: catalog/library.json
           retention-days: 14
 
       - name: Record catalog publication status
-        if: ${{ always() && github.event_name == 'push' }}
+        if: ${{ always() }}
         continue-on-error: true
         shell: bash
         env:
           JOB_STATUS: ${{ job.status }}
+          CATALOG_TAG: ${{ steps.publish.outputs.tag }}
         run: |
           set -euo pipefail
           STATE=failure
-          DESCRIPTION="Rolling catalog refresh failed"
+          DESCRIPTION="Catalog release failed"
           if [[ "$JOB_STATUS" == "success" ]]; then
             STATE=success
-            DESCRIPTION="Rolling catalog.json published and verified"
+            DESCRIPTION="Versioned catalog release published and verified"
           elif [[ "$JOB_STATUS" == "cancelled" ]]; then
             STATE=error
-            DESCRIPTION="Rolling catalog refresh cancelled"
+            DESCRIPTION="Catalog release cancelled"
           fi
-          gh api --method POST \
-            "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
-            -f state="$STATE" \
-            -f context="library/catalog-publish" \
-            -f description="$DESCRIPTION"
+
+          ARGS=(
+            --method POST
+            "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA"
+            -f "state=$STATE"
+            -f "context=library/catalog-publish"
+            -f "description=$DESCRIPTION"
+          )
+          if [[ -n "$CATALOG_TAG" ]]; then
+            ARGS+=( -f "target_url=https://github.com/$GITHUB_REPOSITORY/releases/tag/$CATALOG_TAG" )
+          fi
+          gh api "${ARGS[@]}"

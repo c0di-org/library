@@ -50,40 +50,67 @@ class CatalogRepository(
     private fun readBundledCatalog(): String =
         context.assets.open("catalog.json").bufferedReader().use { it.readText() }
 
-private fun fetchRemoteCatalog(): String {
-    if (BuildConfig.CATALOG_URL.isNotBlank()) {
-        return GitHubHttp.getText(BuildConfig.CATALOG_URL, null, accept = "application/json")
-    }
+    private fun fetchRemoteCatalog(): String {
+        if (BuildConfig.CATALOG_URL.isNotBlank()) {
+            return GitHubHttp.getText(BuildConfig.CATALOG_URL, null, accept = "application/json")
+        }
 
-    val repo = BuildConfig.CATALOG_REPOSITORY
-    check(repo.isNotBlank()) { "No remote catalog is configured." }
-    val releaseJson = GitHubHttp.getText(
-        "https://api.github.com/repos/$repo/releases/tags/catalog",
-        null
-    )
-    val release = JSONObject(releaseJson)
-    val assets = release.optJSONArray("assets") ?: JSONArray()
-    var apiUrl: String? = null
-    var browserUrl: String? = null
-    for (index in 0 until assets.length()) {
-        val asset = assets.getJSONObject(index)
-        if (asset.optString("name") == "catalog.json") {
-            apiUrl = asset.optString("url").takeIf { it.isNotBlank() }
-            browserUrl = asset.optString("browser_download_url").takeIf { it.isNotBlank() }
-            break
+        val repo = BuildConfig.CATALOG_REPOSITORY
+        check(repo.isNotBlank()) { "No remote catalog is configured." }
+        val release = latestCatalogRelease(repo)
+        val assets = release.optJSONArray("assets") ?: JSONArray()
+        var apiUrl: String? = null
+        var browserUrl: String? = null
+        for (index in 0 until assets.length()) {
+            val asset = assets.getJSONObject(index)
+            if (asset.optString("name") == "catalog.json") {
+                apiUrl = asset.optString("url").takeIf { it.isNotBlank() }
+                browserUrl = asset.optString("browser_download_url").takeIf { it.isNotBlank() }
+                break
+            }
+        }
+        val selected = browserUrl ?: apiUrl
+            ?: error("The latest catalog release does not contain catalog.json.")
+
+        return if (selected.startsWith("https://api.github.com/")) {
+            GitHubHttp.openBinary(selected, null).use { response ->
+                response.stream.bufferedReader().use { it.readText() }
+            }
+        } else {
+            GitHubHttp.getText(selected, null, accept = "application/json")
         }
     }
-    val selected = browserUrl ?: apiUrl
-        ?: error("The catalog release does not contain catalog.json.")
 
-    return if (selected.startsWith("https://api.github.com/")) {
-        GitHubHttp.openBinary(selected, null).use { response ->
-            response.stream.bufferedReader().use { it.readText() }
+    private fun latestCatalogRelease(repo: String): JSONObject {
+        val releasesJson = GitHubHttp.getText(
+            "https://api.github.com/repos/$repo/releases?per_page=100",
+            null
+        )
+        val releases = JSONArray(releasesJson)
+        var latest: JSONObject? = null
+        var latestPublishedAt = ""
+
+        for (index in 0 until releases.length()) {
+            val release = releases.optJSONObject(index) ?: continue
+            if (release.optBoolean("draft", false) || release.optBoolean("prerelease", false)) continue
+            if (!release.optString("tag_name").startsWith("catalog-")) continue
+
+            val publishedAt = release.optString("published_at")
+                .ifBlank { release.optString("created_at") }
+            if (latest == null || publishedAt > latestPublishedAt) {
+                latest = release
+                latestPublishedAt = publishedAt
+            }
         }
-    } else {
-        GitHubHttp.getText(selected, null, accept = "application/json")
+
+        if (latest != null) return latest
+
+        val legacyReleaseJson = GitHubHttp.getText(
+            "https://api.github.com/repos/$repo/releases/tags/catalog",
+            null
+        )
+        return JSONObject(legacyReleaseJson)
     }
-}
 
     internal fun parse(raw: String): Catalog {
         val root = JSONObject(raw)

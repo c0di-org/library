@@ -22,7 +22,6 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GITHUB_TOKEN: ${{ github.token }}
       LIBRARY_GITHUB_OWNER: ${{ github.repository_owner }}
-      LIBRARY_GITHUB_APP_CLIENT_ID: ${{ vars.LIBRARY_CATALOG_APP_CLIENT_ID }}
       LIBRARY_SIGNING_STORE_PASSWORD: ${{ secrets.LIBRARY_SIGNING_STORE_PASSWORD }}
       LIBRARY_SIGNING_KEY_ALIAS: ${{ secrets.LIBRARY_SIGNING_KEY_ALIAS }}
       LIBRARY_SIGNING_KEY_PASSWORD: ${{ secrets.LIBRARY_SIGNING_KEY_PASSWORD }}
@@ -123,20 +122,29 @@ jobs:
           set -euo pipefail
           mkdir -p app/src/main/assets
 
-          if gh release view catalog --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          LATEST_CATALOG_TAG="$(
+            gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq '[.[] | select(.draft == false and .prerelease == false and (.tag_name | startswith("catalog-")))] | sort_by(.published_at // .created_at) | reverse | .[0].tag_name // ""'
+          )"
+
+          if [[ -z "$LATEST_CATALOG_TAG" ]] && gh release view catalog --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            LATEST_CATALOG_TAG=catalog
+          fi
+
+          if [[ -n "$LATEST_CATALOG_TAG" ]]; then
             SNAPSHOT_DIR="$RUNNER_TEMP/catalog-snapshot"
             rm -rf "$SNAPSHOT_DIR"
             mkdir -p "$SNAPSHOT_DIR"
-            gh release download catalog \
+            gh release download "$LATEST_CATALOG_TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --pattern catalog.json \
               --dir "$SNAPSHOT_DIR"
             python3 scripts/validate_catalog.py "$SNAPSHOT_DIR/catalog.json"
             cp "$SNAPSHOT_DIR/catalog.json" app/src/main/assets/catalog.json
-            echo "Bundled the latest published rolling catalog as the offline fallback."
+            echo "Bundled $LATEST_CATALOG_TAG as the offline catalog fallback."
           else
             python3 scripts/validate_catalog.py app/src/main/assets/catalog.json
-            echo "No rolling catalog release exists yet; using the checked-in offline fallback."
+            echo "No published catalog release exists yet; using the checked-in offline fallback."
           fi
 
       - name: Lint, test, and build signed release
