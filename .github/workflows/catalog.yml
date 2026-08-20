@@ -148,7 +148,7 @@ jobs:
           retention-days: 14
 
       - name: Record catalog publication status
-        if: ${{ always() && github.event_name == 'push' }}
+        if: ${{ always() }}
         continue-on-error: true
         shell: bash
         env:
