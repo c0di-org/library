@@ -26,6 +26,7 @@ on:
 
 permissions:
   contents: read
+  statuses: write
 
 concurrency:
   group: library-managed-signing
@@ -57,9 +58,11 @@ jobs:
       - uses: android-actions/setup-android@v3
 
       - name: Install APK signing tools
+        id: signing-tools
         run: sdkmanager "build-tools;36.0.0"
 
       - name: Require managed-signing secrets
+        id: secrets
         shell: bash
         env:
           KEYSTORE_BASE64: ${{ secrets.LIBRARY_DISTRIBUTION_KEYSTORE_BASE64 }}
@@ -76,4 +79,40 @@ jobs:
           echo "LIBRARY_DISTRIBUTION_KEYSTORE_FILE=$RUNNER_TEMP/library-distribution.jks" >> "$GITHUB_ENV"
 
       - name: Sign and publish validated source artifact
+        id: publish
         run: python3 scripts/manage_unsigned_apks.py
+
+      - name: Record managed-signing status
+        if: ${{ always() }}
+        continue-on-error: true
+        shell: bash
+        env:
+          ENROLLMENT_OUTCOME: ${{ steps.enrollment.outcome }}
+          TOOLS_OUTCOME: ${{ steps.signing-tools.outcome }}
+          SECRETS_OUTCOME: ${{ steps.secrets.outcome }}
+          PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
+        run: |
+          set -euo pipefail
+          APP_NAME="${SOURCE_REPOSITORY##*/}"
+          STATE=failure
+          DESCRIPTION="$APP_NAME managed signing workflow failed"
+
+          if [[ "$ENROLLMENT_OUTCOME" != "success" ]]; then
+            DESCRIPTION="$APP_NAME enrollment resolution failed"
+          elif [[ "$TOOLS_OUTCOME" != "success" ]]; then
+            DESCRIPTION="$APP_NAME signing-tool setup failed"
+          elif [[ "$SECRETS_OUTCOME" != "success" ]]; then
+            DESCRIPTION="$APP_NAME managed-signing credential check failed"
+          elif [[ "$PUBLISH_OUTCOME" == "success" ]]; then
+            STATE=success
+            DESCRIPTION="$APP_NAME signed release published"
+          elif [[ "$PUBLISH_OUTCOME" == "failure" ]]; then
+            DESCRIPTION="$APP_NAME signing or release publication failed"
+          fi
+
+          gh api --method POST \
+            "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
+            -f state="$STATE" \
+            -f context="library/managed-signing/$APP_NAME" \
+            -f description="$DESCRIPTION" \
+            -f target_url="https://github.com/$SOURCE_REPOSITORY/actions/runs/$SOURCE_RUN_ID"
