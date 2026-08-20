@@ -14,6 +14,9 @@
 *.jks.b64
 *.keystore.b64
 /infra/catalog-webhook/.wrangler/
+/infra/catalog-webhook/node_modules/
+/infra/catalog-webhook/package.json
+/infra/catalog-webhook/package-lock.json
 
 __pycache__/
 *.pyc
