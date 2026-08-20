@@ -16,10 +16,20 @@ if (!privateKey) {
 
 const jwt = await mintWorkingJwt(privateKey, [appId, process.env.LIBRARY_CATALOG_APP_CLIENT_ID]);
 const deliveries = await listDeliveries(jwt, since, until);
-const interesting = deliveries.filter((delivery) => delivery.event === 'workflow_run' || delivery.event === 'release' || delivery.event === 'ping' || !query);
+const interesting = deliveries.filter((delivery) => {
+  if (delivery.event === 'workflow_run' || delivery.event === 'release' || delivery.event === 'ping') return true;
+  return !query;
+});
 const details = [];
 for (const delivery of interesting) {
-  details.push(await getDelivery(jwt, delivery.id));
+  try {
+    details.push(await getDelivery(jwt, delivery.id));
+  } catch (error) {
+    details.push({
+      ...delivery,
+      request: { payload: { _error: error instanceof Error ? error.message : String(error) } },
+    });
+  }
 }
 const matches = details.filter((delivery) => matchesQuery(delivery, query));
 
@@ -71,7 +81,7 @@ async function listDeliveries(token, sinceTime, untilTime) {
     url.searchParams.set('per_page', '100');
     if (cursor) url.searchParams.set('cursor', cursor);
     const response = await githubFetch(url, token);
-    const batch = await response.json();
+    const batch = await parseGithubJson(await response.text());
     if (!response.ok || !Array.isArray(batch)) {
       throw new Error(`could not list webhook deliveries (${response.status}): ${JSON.stringify(batch).slice(0, 300)}`);
     }
@@ -90,11 +100,15 @@ async function listDeliveries(token, sinceTime, untilTime) {
 
 async function getDelivery(token, id) {
   const response = await githubFetch(`${API}/app/hook/deliveries/${id}`, token);
-  const data = await response.json();
+  const data = await parseGithubJson(await response.text());
   if (!response.ok) {
     throw new Error(`could not read webhook delivery ${id} (${response.status})`);
   }
   return data;
+}
+
+function parseGithubJson(text) {
+  return JSON.parse(text.replace(/:(0|[1-9][0-9]{15,})([,\]}])/g, ':"$1"$2'));
 }
 
 function githubFetch(url, token) {
