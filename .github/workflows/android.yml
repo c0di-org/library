@@ -44,6 +44,7 @@ jobs:
           for script in scripts/*.sh; do bash -n "$script"; done
           node --check infra/catalog-webhook/worker.mjs
           node --check infra/catalog-webhook/worker-entry.mjs
+          node --check infra/catalog-webhook/inspect-deliveries.mjs
           node infra/catalog-webhook/worker.test.mjs
           node infra/catalog-webhook/worker-entry.test.mjs
           python3 - <<'PY'

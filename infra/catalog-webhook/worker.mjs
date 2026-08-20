@@ -1,12 +1,34 @@
 const API = 'https://api.github.com';
 const API_VERSION = '2022-11-28';
 const DEFAULT_MANAGED_ARTIFACT = 'library-unsigned-apk';
+const ARTIFACT_LOOKUP_ATTEMPTS = 4;
 const encoder = new TextEncoder();
+
+export const WORKER_RELEASE = '2026-08-20-observability';
+
+export function healthPayload(env = {}) {
+  return {
+    ok: true,
+    service: 'library-catalog-webhook',
+    release: WORKER_RELEASE,
+    entry: 'worker',
+    sourceOwner: env.SOURCE_OWNER || null,
+    libraryOwner: env.LIBRARY_OWNER || null,
+    libraryRepo: env.LIBRARY_REPO || null,
+    catalogWorkflow: env.LIBRARY_WORKFLOW || 'catalog.yml',
+    signingWorkflow: env.MANAGED_SIGNING_WORKFLOW || 'managed-signing.yml',
+    libraryRef: env.LIBRARY_REF || 'main',
+  };
+}
+
+function logDecision(fields) {
+  console.log(JSON.stringify({ service: 'library-catalog-webhook', ...fields }));
+}
 
 export default {
   async fetch(request, env) {
     if (request.method !== 'POST') {
-      return json({ ok: true, service: 'library-catalog-webhook' }, 200);
+      return json(healthPayload(env), 200);
     }
 
     const event = request.headers.get('x-github-event');
@@ -15,17 +37,21 @@ export default {
     const body = await request.text();
 
     if (!env.GITHUB_WEBHOOK_SECRET || !env.GITHUB_APP_ID || !env.GITHUB_APP_PRIVATE_KEY) {
+      logDecision({ event, delivery, result: 'error', reason: 'missing-github-app-secrets' });
       return json({ error: 'worker is missing required GitHub App secrets' }, 500);
     }
 
     if (!(await verifyWebhookSignature(env.GITHUB_WEBHOOK_SECRET, body, signature))) {
+      logDecision({ event, delivery, result: 'rejected', reason: 'invalid-webhook-signature' });
       return json({ error: 'invalid webhook signature' }, 401);
     }
 
     if (event === 'ping') {
+      logDecision({ event, delivery, result: 'pong' });
       return json({ ok: true, pong: true }, 200);
     }
     if (event !== 'release' && event !== 'workflow_run') {
+      logDecision({ event, delivery, result: 'ignored', reason: `event:${event || 'unknown'}` });
       return json({ ok: true, ignored: `event:${event || 'unknown'}` }, 202);
     }
 
@@ -39,7 +65,17 @@ export default {
     if (event === 'release') {
       const decision = shouldDispatchRelease(payload, env);
       if (!decision.dispatch) {
-        return json({ ok: true, ignored: decision.reason }, 202);
+        logDecision({
+          event,
+          action: payload.action || null,
+          delivery,
+          repository: payload.repository?.full_name || null,
+          tag: payload.release?.tag_name || null,
+          result: 'ignored',
+          reason: decision.reason,
+          sourceOwner: env.SOURCE_OWNER || null,
+        });
+        return json({ ok: true, ignored: decision.reason, sourceOwner: env.SOURCE_OWNER || null }, 202);
       }
 
       try {
@@ -47,6 +83,15 @@ export default {
         const installationId = await findLibraryInstallation(appJwt, env);
         const libraryToken = await createLibraryInstallationToken(appJwt, installationId, env);
         await dispatchCatalogWorkflow(libraryToken, payload, delivery, env);
+        logDecision({
+          event,
+          action: payload.action || null,
+          delivery,
+          repository: payload.repository.full_name,
+          tag: payload.release?.tag_name || null,
+          result: 'dispatched',
+          workflow: env.LIBRARY_WORKFLOW || 'catalog.yml',
+        });
         return json({
           ok: true,
           dispatched: true,
@@ -56,6 +101,13 @@ export default {
           delivery,
         }, 202);
       } catch (error) {
+        logDecision({
+          event,
+          delivery,
+          repository: payload.repository?.full_name || null,
+          result: 'error',
+          reason: error instanceof Error ? error.message : String(error),
+        });
         console.error('catalog dispatch failed', error);
         return json({ error: error instanceof Error ? error.message : String(error) }, 502);
       }
@@ -63,7 +115,24 @@ export default {
 
     const candidate = shouldInspectWorkflowRun(payload, env);
     if (!candidate.inspect) {
-      return json({ ok: true, ignored: candidate.reason }, 202);
+      logDecision({
+        event,
+        action: payload.action || null,
+        delivery,
+        repository: payload.repository?.full_name || null,
+        runId: payload.workflow_run?.id || null,
+        conclusion: payload.workflow_run?.conclusion || null,
+        result: 'ignored',
+        reason: candidate.reason,
+        sourceOwner: env.SOURCE_OWNER || null,
+      });
+      return json({
+        ok: true,
+        ignored: candidate.reason,
+        sourceOwner: env.SOURCE_OWNER || null,
+        repository: payload.repository?.full_name || null,
+        runId: payload.workflow_run?.id || null,
+      }, 202);
     }
 
     try {
@@ -78,6 +147,16 @@ export default {
       // the protected signing workflow performs the authoritative .library.json check.
       const expectedBranch = managedApp?.branch || payload.repository.default_branch;
       if (payload.workflow_run?.head_branch !== expectedBranch) {
+        logDecision({
+          event,
+          delivery,
+          repository: payload.repository.full_name,
+          runId: payload.workflow_run.id,
+          result: 'ignored',
+          reason: 'managed-build-wrong-branch',
+          headBranch: payload.workflow_run.head_branch,
+          expectedBranch,
+        });
         return json({ ok: true, ignored: 'managed-build-wrong-branch' }, 202);
       }
 
@@ -98,10 +177,28 @@ export default {
         artifactName,
       );
       if (!artifact) {
+        logDecision({
+          event,
+          delivery,
+          repository: payload.repository.full_name,
+          runId: payload.workflow_run.id,
+          result: 'ignored',
+          reason: `workflow-run-without-${artifactName}`,
+        });
         return json({ ok: true, ignored: `workflow-run-without-${artifactName}` }, 202);
       }
 
       await dispatchManagedSigningWorkflow(libraryToken, payload, artifact, delivery, env);
+      logDecision({
+        event,
+        delivery,
+        repository: payload.repository.full_name,
+        runId: payload.workflow_run.id,
+        artifactId: artifact.id,
+        enrollment: managedApp ? 'central' : 'repository-candidate',
+        result: 'dispatched',
+        workflow: env.MANAGED_SIGNING_WORKFLOW || 'managed-signing.yml',
+      });
       return json({
         ok: true,
         dispatched: true,
@@ -113,6 +210,14 @@ export default {
         delivery,
       }, 202);
     } catch (error) {
+      logDecision({
+        event,
+        delivery,
+        repository: payload.repository?.full_name || null,
+        runId: payload.workflow_run?.id || null,
+        result: 'error',
+        reason: error instanceof Error ? error.message : String(error),
+      });
       console.error('managed signing dispatch failed', error);
       return json({ error: error instanceof Error ? error.message : String(error) }, 502);
     }
@@ -247,6 +352,26 @@ async function loadManagedApps(token, env) {
 }
 
 async function findRunArtifact(token, repository, runId, artifactName) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= ARTIFACT_LOOKUP_ATTEMPTS; attempt += 1) {
+    try {
+      const artifact = await listRunArtifact(token, repository, runId, artifactName);
+      if (artifact) return artifact;
+    } catch (error) {
+      lastError = error;
+      const statusMatch = / \((\d+)\)/.exec(error instanceof Error ? error.message : '');
+      const status = statusMatch ? Number(statusMatch[1]) : 0;
+      if (status && status < 500) throw error;
+    }
+    if (attempt < ARTIFACT_LOOKUP_ATTEMPTS && typeof scheduler !== 'undefined' && scheduler.wait) {
+      await scheduler.wait(1000 * attempt);
+    }
+  }
+  if (lastError) throw lastError;
+  return null;
+}
+
+async function listRunArtifact(token, repository, runId, artifactName) {
   const [owner, repo] = repository.split('/');
   const response = await githubFetch(
     `${API}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${encodeURIComponent(String(runId))}/artifacts?per_page=100`,

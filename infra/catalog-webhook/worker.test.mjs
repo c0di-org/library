@@ -140,4 +140,22 @@ verifier.update(`${header}.${claims}`);
 verifier.end();
 assert.equal(verifier.verify(publicKey, Buffer.from(signed, 'base64url')), true);
 
+const { default: worker, healthPayload, WORKER_RELEASE } = await import('./worker.mjs');
+assert.equal(healthPayload(env).sourceOwner, 'c0di-org');
+assert.equal(healthPayload(env).signingWorkflow, 'managed-signing.yml');
+const health = await worker.fetch(new Request('https://example.invalid/'), env);
+assert.equal(health.status, 200);
+assert.deepEqual(await health.json(), {
+  ok: true,
+  service: 'library-catalog-webhook',
+  release: WORKER_RELEASE,
+  entry: 'worker',
+  sourceOwner: 'c0di-org',
+  libraryOwner: 'c0di-org',
+  libraryRepo: 'library',
+  catalogWorkflow: 'catalog.yml',
+  signingWorkflow: 'managed-signing.yml',
+  libraryRef: 'main',
+});
+
 console.log('catalog webhook tests OK');
