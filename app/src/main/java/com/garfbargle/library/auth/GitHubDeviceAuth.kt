@@ -4,7 +4,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.io.IOException
 import java.net.HttpURLConnection
+import java.net.UnknownHostException
 import java.net.URLEncoder
 import java.net.URL
 import java.nio.charset.StandardCharsets
@@ -134,6 +136,29 @@ class GitHubDeviceAuth(private val clientId: String) {
     }
 
     private fun post(url: String, values: Map<String, String>): JSONObject {
+        var lastDnsError: UnknownHostException? = null
+        repeat(DNS_RETRY_ATTEMPTS) { attempt ->
+            try {
+                return postOnce(url, values)
+            } catch (error: UnknownHostException) {
+                lastDnsError = error
+                if (attempt < DNS_RETRY_ATTEMPTS - 1) {
+                    Thread.sleep(DNS_RETRY_DELAY_MILLIS * (attempt + 1L))
+                }
+            } catch (error: IOException) {
+                throw IllegalStateException(
+                    "Can't connect to GitHub right now. Check your connection and try again.",
+                    error
+                )
+            }
+        }
+        throw IllegalStateException(
+            "Can't reach GitHub. Check your connection, VPN, or Private DNS and try again.",
+            lastDnsError
+        )
+    }
+
+    private fun postOnce(url: String, values: Map<String, String>): JSONObject {
         val body = values.entries.joinToString("&") { (key, value) ->
             "${encode(key)}=${encode(value)}"
         }.toByteArray(StandardCharsets.UTF_8)
@@ -165,5 +190,7 @@ class GitHubDeviceAuth(private val clientId: String) {
         const val DEVICE_CODE_URL = "https://github.com/login/device/code"
         const val TOKEN_URL = "https://github.com/login/oauth/access_token"
         const val DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
+        const val DNS_RETRY_ATTEMPTS = 3
+        const val DNS_RETRY_DELAY_MILLIS = 500L
     }
 }
