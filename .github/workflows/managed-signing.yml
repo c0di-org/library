@@ -33,7 +33,30 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  trace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SOURCE_REPOSITORY: ${{ inputs.source_repository }}
+      SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+    steps:
+      - name: Record managed-signing dispatch
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          APP_NAME="${SOURCE_REPOSITORY##*/}"
+          gh api --method POST \
+            "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
+            -f state="pending" \
+            -f context="library/managed-signing/$APP_NAME" \
+            -f description="$APP_NAME signer dispatch accepted" \
+            -f target_url="https://github.com/$SOURCE_REPOSITORY/actions/runs/$SOURCE_RUN_ID"
+
   sign:
+    needs: trace
     environment: production
     runs-on: ubuntu-latest
     timeout-minutes: 45
