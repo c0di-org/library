@@ -1,0 +1,41 @@
+name: Inspect GitHub App webhook deliveries
+
+on:
+  workflow_dispatch:
+    inputs:
+      query:
+        description: Optional delivery search string such as a workflow run ID
+        required: false
+        type: string
+        default: '32403577865'
+      since:
+        description: Inclusive UTC start timestamp
+        required: false
+        type: string
+        default: '2026-08-20T18:00:00Z'
+      until:
+        description: Inclusive UTC end timestamp
+        required: false
+        type: string
+        default: '2026-08-20T22:00:00Z'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    environment: production
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: List LibrarianCatalogBot deliveries
+        env:
+          GITHUB_APP_ID: '4617670'
+          LIBRARY_CATALOG_APP_CLIENT_ID: ${{ vars.LIBRARY_CATALOG_APP_CLIENT_ID }}
+          LIBRARY_CATALOG_APP_PRIVATE_KEY: ${{ secrets.LIBRARY_CATALOG_APP_PRIVATE_KEY }}
+          DELIVERY_QUERY: ${{ inputs.query }}
+          DELIVERY_SINCE: ${{ inputs.since }}
+          DELIVERY_UNTIL: ${{ inputs.until }}
+        run: node infra/catalog-webhook/inspect-deliveries.mjs

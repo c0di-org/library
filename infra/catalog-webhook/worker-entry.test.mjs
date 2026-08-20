@@ -47,4 +47,11 @@ const response = await workerEntry.fetch(
 assert.equal(response.status, 202);
 assert.deepEqual(await response.json(), { ok: true, ignored: 'catalog-release' });
 
+const health = await workerEntry.fetch(new Request('https://example.invalid/'), env);
+assert.equal(health.status, 200);
+const healthBody = await health.json();
+assert.equal(healthBody.ok, true);
+assert.equal(healthBody.entry, 'worker-entry');
+assert.equal(healthBody.libraryOwner, 'c0di-org');
+
 console.log('catalog webhook entry tests OK');

@@ -83,8 +83,13 @@ The checked-in configuration targets `c0di-org/library`, and Wrangler deploys `w
 
 ## Verification
 
+A GET to the deployed Worker returns non-secret runtime config (`SOURCE_OWNER`, Library destination, workflow filenames, and a `release` stamp). Use that to confirm the live deployment after `wrangler deploy`.
+
+To inspect GitHub App deliveries for a source workflow run, dispatch `.github/workflows/webhook-deliveries.yml`. It mints a short-lived App JWT from the Catalog App private key and prints delivery status codes plus redacted Worker response bodies. It does not dispatch signing.
+
 Expected webhook behavior:
 
+- `GET` → HTTP 200 with live `sourceOwner` / `entry: worker-entry`;
 - `ping` → HTTP 200;
 - unrelated event → HTTP 202, ignored;
 - Library `catalog` / `catalog-*` release → HTTP 202, ignored;

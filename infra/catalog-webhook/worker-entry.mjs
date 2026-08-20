@@ -12,6 +12,18 @@ export function isCatalogRelease(payload, env) {
 
 export default {
   async fetch(request, env) {
+    if (request.method !== 'POST') {
+      const response = await worker.fetch(request, env);
+      const payload = await response.json();
+      return new Response(
+        JSON.stringify({ ...payload, entry: 'worker-entry' }),
+        {
+          status: response.status,
+          headers: { 'content-type': 'application/json; charset=utf-8' },
+        },
+      );
+    }
+
     if (
       request.method === 'POST'
       && request.headers.get('x-github-event') === 'release'
@@ -28,6 +40,15 @@ export default {
       if (payload && isCatalogRelease(payload, env)) {
         const signature = request.headers.get('x-hub-signature-256');
         if (await verifyWebhookSignature(env.GITHUB_WEBHOOK_SECRET, body, signature)) {
+          console.log(JSON.stringify({
+            service: 'library-catalog-webhook',
+            event: 'release',
+            delivery: request.headers.get('x-github-delivery') || '',
+            repository: payload.repository?.full_name || null,
+            tag: payload.release?.tag_name || null,
+            result: 'ignored',
+            reason: 'catalog-release',
+          }));
           return new Response(
             JSON.stringify({ ok: true, ignored: 'catalog-release' }),
             {
