@@ -23,14 +23,16 @@ The catalog workflow mints a one-hour Catalog App installation token for reposit
 
 Install the App on the repositories Library should discover. The catalog workflow asks GitHub for a token scoped to `Contents: read` and uses the Library workflow `GITHUB_TOKEN` only to create its own versioned `catalog-*` release. Catalog releases intentionally do not need to trigger further automation.
 
-## Automated releases that must feed the webhook
+## Release-to-catalog chaining
 
-A release that is expected to enter the downstream GitHub App webhook path must **not** be published with the repository's built-in `GITHUB_TOKEN`. GitHub suppresses downstream workflow chaining for events created by that token.
+Managed app releases are published by the protected managed-signing automation rather than by a source repository's built-in `GITHUB_TOKEN`. Their Release webhooks therefore enter the normal GitHub App → `catalog.yml` path.
 
-Library's versioned Android release therefore uses the protected `LIBRARY_GITHUB_TOKEN` only for the final `gh release create` operation. Managed signing already uses the same protected automation credential when it publishes signed releases back to source repositories. Those releases can therefore enter the normal Release webhook → Catalog App → `catalog.yml` path.
+Library's own Android release is a special case: it is safely published with Library's built-in `GITHUB_TOKEN`, but GitHub does not allow events created with that token to start downstream workflows. After publishing `vX.Y.Z`, `release.yml` therefore explicitly invokes the same `catalog.yml` `workflow_dispatch` entry point with the new release ID/tag. `workflow_dispatch` is the documented exception that is allowed to start a workflow from `GITHUB_TOKEN`.
+
+This exception is local to Library's self-release workflow. It does not replace the GitHub App event path used for managed source repositories.
 
 ## Managed signing
 
 Managed signing is intentionally separate because it needs broader capabilities (`Actions: read` to retrieve build artifacts and `Contents: write` to publish a signed release). Do not broaden the read-only Catalog App just to support signing or release publication; keep write-capable automation credentials protected in the Library production environment.
 
-This separation keeps the user-authorized Catalog App incapable of writing repository contents while allowing trusted release automation to create events that the webhook router can consume.
+This separation keeps the user-authorized Catalog App incapable of writing repository contents while allowing trusted managed-signing automation to publish source-repo releases that the webhook router can consume.
