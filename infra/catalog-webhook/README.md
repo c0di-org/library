@@ -81,6 +81,8 @@ Non-secret settings live in `wrangler.toml`:
 
 The checked-in configuration targets `c0di-org/library`, and Wrangler deploys `worker-entry.mjs` as the Worker entrypoint.
 
+Git merge does not update the live Worker. After changing `SOURCE_OWNER`, `LIBRARY_OWNER`, the entrypoint, or Worker source, run `wrangler deploy` from `infra/catalog-webhook/` (or dispatch `.github/workflows/catalog-webhook-deploy.yml`). Confirm the live GET payload shows `sourceOwner: "c0di-org"` and `entry: "worker-entry"` before expecting new `workflow_run` events to dispatch signing.
+
 ## Verification
 
 A GET to the deployed Worker returns non-secret runtime config (`SOURCE_OWNER`, Library destination, workflow filenames, and a `release` stamp). Use that to confirm the live deployment after `wrangler deploy`.
