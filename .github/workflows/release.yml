@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: library-release
@@ -103,12 +104,11 @@ jobs:
         shell: bash
         env:
           KEYSTORE_BASE64: ${{ secrets.LIBRARY_KEYSTORE_BASE64 }}
-          RELEASE_TOKEN: ${{ secrets.LIBRARY_GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          for name in KEYSTORE_BASE64 RELEASE_TOKEN LIBRARY_SIGNING_STORE_PASSWORD LIBRARY_SIGNING_KEY_ALIAS LIBRARY_SIGNING_KEY_PASSWORD; do
+          for name in KEYSTORE_BASE64 LIBRARY_SIGNING_STORE_PASSWORD LIBRARY_SIGNING_KEY_ALIAS LIBRARY_SIGNING_KEY_PASSWORD; do
             if [[ -z "${!name:-}" ]]; then
-              echo "Missing required release secret: $name" >&2
+              echo "Missing required release-signing secret: $name" >&2
               exit 1
             fi
           done
@@ -178,8 +178,6 @@ jobs:
       - name: Publish versioned GitHub Release
         if: steps.version.outputs.should_release == 'true'
         shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.LIBRARY_GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           TAG="${{ steps.version.outputs.tag }}"
@@ -194,6 +192,22 @@ jobs:
             --target "$GITHUB_SHA" \
             "dist/library-$VERSION.apk" \
             dist/SHA256SUMS.txt
+
+      - name: Dispatch catalog reconciliation for Library release
+        if: steps.version.outputs.should_release == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.version.outputs.tag }}"
+          RELEASE_ID="$(gh release view "$TAG" --json databaseId --jq .databaseId)"
+          test -n "$RELEASE_ID"
+          gh workflow run catalog.yml \
+            --ref main \
+            -f source_repository="$GITHUB_REPOSITORY" \
+            -f release_id="$RELEASE_ID" \
+            -f release_tag="$TAG" \
+            -f delivery_id="library-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "Dispatched catalog reconciliation for $TAG (release $RELEASE_ID)."
 
       - name: Upload signed APK workflow artifact
         if: steps.version.outputs.should_release == 'true'
