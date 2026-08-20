@@ -36,8 +36,12 @@ def request_json(token: str, url: str) -> dict:
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )
-    with urllib.request.urlopen(request, timeout=45) as response:
-        return json.loads(response.read())
+    try:
+        with urllib.request.urlopen(request, timeout=45) as response:
+            return json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:300]
+        raise RuntimeError(f"GitHub API {exc.code} for {url}: {detail}") from exc
 
 
 def source_metadata(token: str, repository: str, ref: str) -> dict:
@@ -48,8 +52,9 @@ def source_metadata(token: str, repository: str, ref: str) -> dict:
     )
     try:
         data = request_json(token, url)
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
+    except (urllib.error.HTTPError, RuntimeError) as exc:
+        status = getattr(exc, "code", None)
+        if status == 404 or "GitHub API 404 " in str(exc):
             raise ValueError(f"{repository}: .library.json is required for repo-side managed signing") from exc
         raise
     if data.get("encoding") != "base64":

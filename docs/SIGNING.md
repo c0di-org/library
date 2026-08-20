@@ -82,7 +82,7 @@ LIBRARY_DISTRIBUTION_KEY_ALIAS
 LIBRARY_DISTRIBUTION_KEY_PASSWORD
 ```
 
-`LIBRARY_GITHUB_TOKEN` needs `Actions: read`, `Contents: write`, and `Metadata: read` on repositories Library manages. Repo-side enrollment also uses that contents access to read `.library.json` from the exact source commit. Keep the credential scoped only to repositories Library intentionally manages.
+`LIBRARY_GITHUB_TOKEN` needs `Actions: read`, `Contents: write`, and `Metadata: read` on repositories Library manages. Repo-side enrollment also uses that contents access to read `.library.json` from the exact source commit. Managed signing mints a short-lived LibrarianCatalogBot installation token for source metadata and artifact reads so private apps do not depend on a stale PAT. Publishing the signed GitHub Release still needs Contents: write on the source repository.
 
 ## Backups
 

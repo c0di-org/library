@@ -62,7 +62,6 @@ jobs:
     timeout-minutes: 45
     env:
       LIBRARY_GITHUB_OWNER: ${{ github.repository_owner }}
-      LIBRARY_GITHUB_TOKEN: ${{ secrets.LIBRARY_GITHUB_TOKEN }}
       LIBRARY_DISTRIBUTION_STORE_PASSWORD: ${{ secrets.LIBRARY_DISTRIBUTION_STORE_PASSWORD }}
       LIBRARY_DISTRIBUTION_KEY_ALIAS: ${{ secrets.LIBRARY_DISTRIBUTION_KEY_ALIAS }}
       LIBRARY_DISTRIBUTION_KEY_PASSWORD: ${{ secrets.LIBRARY_DISTRIBUTION_KEY_PASSWORD }}
@@ -74,8 +73,20 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Mint source GitHub App token
+        id: signing-app
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.LIBRARY_CATALOG_APP_CLIENT_ID }}
+          private-key: ${{ secrets.LIBRARY_CATALOG_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-contents: read
+          permission-actions: read
+
       - name: Resolve managed app enrollment
         id: enrollment
+        env:
+          LIBRARY_GITHUB_TOKEN: ${{ steps.signing-app.outputs.token }}
         run: python3 scripts/resolve_managed_app.py
 
       - uses: android-actions/setup-android@v3
@@ -91,7 +102,7 @@ jobs:
           KEYSTORE_BASE64: ${{ secrets.LIBRARY_DISTRIBUTION_KEYSTORE_BASE64 }}
         run: |
           set -euo pipefail
-          for name in KEYSTORE_BASE64 LIBRARY_GITHUB_TOKEN LIBRARY_DISTRIBUTION_STORE_PASSWORD LIBRARY_DISTRIBUTION_KEY_ALIAS LIBRARY_DISTRIBUTION_KEY_PASSWORD; do
+          for name in KEYSTORE_BASE64 LIBRARY_DISTRIBUTION_STORE_PASSWORD LIBRARY_DISTRIBUTION_KEY_ALIAS LIBRARY_DISTRIBUTION_KEY_PASSWORD; do
             if [[ -z "${!name:-}" ]]; then
               echo "Missing managed-signing secret: $name" >&2
               exit 1
@@ -103,6 +114,8 @@ jobs:
 
       - name: Sign and publish validated source artifact
         id: publish
+        env:
+          LIBRARY_GITHUB_TOKEN: ${{ steps.signing-app.outputs.token }}
         run: python3 scripts/manage_unsigned_apks.py
 
       - name: Record managed-signing status

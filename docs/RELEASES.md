@@ -33,7 +33,7 @@ Contents: write
 Metadata: read
 ```
 
-The Library GitHub App needs Actions read access to the source repositories so its webhook can locate a `library-unsigned-apk` candidate. It does not need source contents access for repo-side enrollment; `.library.json` is resolved inside the protected signing workflow with `LIBRARY_GITHUB_TOKEN`.
+The Library GitHub App needs Actions read access to the source repositories so its webhook can locate a `library-unsigned-apk` candidate. Repo-side `.library.json` is resolved inside the protected signing workflow with a short-lived installation token. Publishing the signed source release still requires a Contents: write credential.
 
 Public repositories can still be cataloged anonymously when they are not using managed signing.
 

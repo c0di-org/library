@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
@@ -65,8 +66,12 @@ class GitHub:
         )
 
     def json(self, url: str):
-        with urllib.request.urlopen(self.request(url), timeout=60) as response:
-            return json.loads(response.read())
+        try:
+            with urllib.request.urlopen(self.request(url), timeout=60) as response:
+                return json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:300]
+            raise RuntimeError(f"GitHub API {exc.code} for {url}: {detail}") from exc
 
     def repo(self, full_name: str):
         owner, name = split_repo(full_name)
@@ -101,8 +106,14 @@ class GitHub:
         ).encode()
         request = self.request(f"{API}/repos/{repo['full_name']}/releases", method="POST", data=payload)
         request.add_header("Content-Type", "application/json")
-        with urllib.request.urlopen(request, timeout=60) as response:
-            return json.loads(response.read())
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                return json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:300]
+            raise RuntimeError(
+                f"could not publish {repo['full_name']} release {tag} ({exc.code}): {detail}"
+            ) from exc
 
 
 def split_repo(full_name: str):
@@ -275,7 +286,7 @@ def requested_run_and_artifact(
             f"artifact {artifact_id} is named {artifact.get('name')!r}; expected {expected_artifact!r}"
         )
     if not artifact.get("archive_download_url"):
-        raise ValueError(f"artifact {artifact_id} has no archive download URL"})
+        raise ValueError(f"artifact {artifact_id} has no archive download URL")
 
     return run, artifact
 
