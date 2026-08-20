@@ -16,15 +16,21 @@ For the Android/private-release use case, keep the GitHub App's repository acces
 
 ## Catalog workflow
 
-The catalog workflow mints a one-hour GitHub App installation token instead of using a long-lived PAT. Configure:
+The catalog workflow mints a one-hour Catalog App installation token for repository discovery. Configure:
 
 - repository variable `LIBRARY_CATALOG_APP_CLIENT_ID`
 - repository or environment secret `LIBRARY_CATALOG_APP_PRIVATE_KEY`
 
-Install the App on the repositories Library should discover. The catalog workflow asks GitHub for a token scoped to `Contents: read` and uses the normal repository `GITHUB_TOKEN` only to publish the public rolling catalog in `c0di-org/library`.
+Install the App on the repositories Library should discover. The catalog workflow asks GitHub for a token scoped to `Contents: read` and uses the Library workflow `GITHUB_TOKEN` only to create its own versioned `catalog-*` release. Catalog releases intentionally do not need to trigger further automation.
+
+## Automated releases that must feed the webhook
+
+A release that is expected to enter the downstream GitHub App webhook path must **not** be published with the repository's built-in `GITHUB_TOKEN`. GitHub suppresses downstream workflow chaining for events created by that token.
+
+Library's versioned Android release therefore uses the protected `LIBRARY_GITHUB_TOKEN` only for the final `gh release create` operation. Managed signing already uses the same protected automation credential when it publishes signed releases back to source repositories. Those releases can therefore enter the normal Release webhook → Catalog App → `catalog.yml` path.
 
 ## Managed signing
 
-Managed signing is intentionally separate because it needs broader capabilities (`Actions: read` to retrieve build artifacts and `Contents: write` to publish a signed release). Do not broaden the read-only Catalog App just to support signing; use a dedicated signing GitHub App for that automation before removing the existing managed-signing credential.
+Managed signing is intentionally separate because it needs broader capabilities (`Actions: read` to retrieve build artifacts and `Contents: write` to publish a signed release). Do not broaden the read-only Catalog App just to support signing or release publication; keep write-capable automation credentials protected in the Library production environment.
 
-This separation keeps the user-authorized Catalog App incapable of writing repository contents.
+This separation keeps the user-authorized Catalog App incapable of writing repository contents while allowing trusted release automation to create events that the webhook router can consume.
