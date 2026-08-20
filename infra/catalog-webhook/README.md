@@ -29,12 +29,13 @@ Duplicate deliveries are safe: releases record the source Actions artifact ID, a
 ### Catalog reconciliation
 
 1. GitHub sends a `release` webhook for repositories where the App is installed.
-2. The Worker verifies the webhook signature, ignores draft releases, and ignores Library's rolling `catalog` release to prevent a feedback loop.
-3. It mints a short-lived installation token scoped to `c0di-org/library` and dispatches `.github/workflows/catalog.yml` with release context.
+2. `worker-entry.mjs` verifies the webhook signature and ignores Library's own `catalog` and `catalog-*` releases before they reach the normal router. This prevents catalog releases from feeding back into catalog reconciliation.
+3. The normal Worker ignores draft releases and events outside `SOURCE_OWNER`, then mints a short-lived installation token scoped to `c0di-org/library` and dispatches `.github/workflows/catalog.yml` with release context.
 4. `catalog.yml` performs a full reconciliation. `scripts/sync_github.py` remains the authoritative APK filter; the webhook does not patch catalog JSON directly.
-5. The workflow publishes the rebuilt `catalog.json` as the rolling `catalog` Release asset.
+5. The workflow publishes a new immutable-style `catalog-<run-id>-<attempt>` GitHub Release containing `catalog.json`, then downloads and byte-verifies that exact asset.
+6. Catalog releases use `--latest=false`, so versioned Library APK releases remain the repository's normal Latest release.
 
-`catalog.yml` also runs every six hours as a recovery safety net for a missed Release webhook. That schedule only reconciles already-published releases; it does not discover or sign unsigned workflow artifacts.
+`catalog.yml` contains its own self-release guard as defense in depth in case an older Worker deployment echoes a catalog release event. It also runs every six hours as a recovery safety net for a missed Release webhook. That schedule only reconciles already-published releases; it does not discover or sign unsigned workflow artifacts.
 
 ## Why there is no signing poll
 
@@ -78,7 +79,7 @@ Non-secret settings live in `wrangler.toml`:
 - `MANAGED_SIGNING_WORKFLOW` — managed-signing workflow filename;
 - `LIBRARY_REF` — ref used for workflow dispatch and managed-app config lookup.
 
-The checked-in configuration targets `c0di-org/library`.
+The checked-in configuration targets `c0di-org/library`, and Wrangler deploys `worker-entry.mjs` as the Worker entrypoint.
 
 ## Verification
 
@@ -86,8 +87,9 @@ Expected webhook behavior:
 
 - `ping` → HTTP 200;
 - unrelated event → HTTP 202, ignored;
+- Library `catalog` / `catalog-*` release → HTTP 202, ignored;
 - draft release → HTTP 202, ignored;
-- non-draft release → HTTP 202 with a catalog dispatch;
+- other non-draft release → HTTP 202 with a catalog dispatch;
 - unsuccessful or pull-request workflow run → HTTP 202, ignored;
 - successful workflow on the wrong branch → HTTP 202, ignored;
 - successful workflow without the expected artifact → HTTP 202, ignored;
@@ -97,7 +99,9 @@ No npm install is required for local validation:
 
 ```bash
 node --check worker.mjs
+node --check worker-entry.mjs
 node worker.test.mjs
+node worker-entry.test.mjs
 ```
 
 CI runs the Worker tests alongside helper-script, catalog, Android lint/test, and APK build validation.
