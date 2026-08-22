@@ -62,14 +62,21 @@ class GitHubDeviceAuth(private val clientId: String) {
         var intervalMillis = code.intervalSeconds * 1_000L
         while (System.currentTimeMillis() < code.expiresAtMillis) {
             delay(intervalMillis)
-            val response = post(
-                TOKEN_URL,
-                mapOf(
-                    "client_id" to clientId,
-                    "device_code" to code.deviceCode,
-                    "grant_type" to DEVICE_GRANT
+            val response = try {
+                post(
+                    TOKEN_URL,
+                    mapOf(
+                        "client_id" to clientId,
+                        "device_code" to code.deviceCode,
+                        "grant_type" to DEVICE_GRANT
+                    )
                 )
-            )
+            } catch (_: GitHubNetworkException) {
+                // Device Flow remains valid while the browser is open. Android may briefly lose DNS
+                // or network access when Library is backgrounded, so keep polling until the code
+                // expires instead of discarding the authorization session on a transient failure.
+                continue
+            }
             response.optString("access_token").takeIf { it.isNotBlank() }?.let {
                 return@withContext sessionFrom(response)
             }
@@ -146,13 +153,13 @@ class GitHubDeviceAuth(private val clientId: String) {
                     Thread.sleep(DNS_RETRY_DELAY_MILLIS * (attempt + 1L))
                 }
             } catch (error: IOException) {
-                throw IllegalStateException(
+                throw GitHubNetworkException(
                     "Can't connect to GitHub right now. Check your connection and try again.",
                     error
                 )
             }
         }
-        throw IllegalStateException(
+        throw GitHubNetworkException(
             "Can't reach GitHub. Check your connection, VPN, or Private DNS and try again.",
             lastDnsError
         )
@@ -194,3 +201,5 @@ class GitHubDeviceAuth(private val clientId: String) {
         const val DNS_RETRY_DELAY_MILLIS = 500L
     }
 }
+
+private class GitHubNetworkException(message: String, cause: IOException?) : IOException(message, cause)
