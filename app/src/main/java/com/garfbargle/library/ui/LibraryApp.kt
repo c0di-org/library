@@ -22,7 +22,6 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -32,10 +31,8 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.ArrowBack
@@ -567,29 +564,6 @@ private fun LibraryScreen(
                 )
             }
         } else {
-            if (allInstalled) {
-                item(span = { GridItemSpan(maxLineSpan) }) {
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(24.dp))
-                            .background(Color(0xFF121512))
-                            .padding(20.dp)
-                    ) {
-                        Icon(Icons.Default.CheckCircle, null, tint = Acid, modifier = Modifier.size(24.dp))
-                        Spacer(Modifier.height(14.dp))
-                        Text("You're all caught up", color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                        Spacer(Modifier.height(5.dp))
-                        Text(
-                            "Every app in Library is installed. This tab stays useful for browsing; use Apps for updates and management.",
-                            color = TextSecondary,
-                            fontSize = 13.sp,
-                            lineHeight = 19.sp
-                        )
-                    }
-                }
-            }
-
             hero?.let { app ->
                 item(span = { GridItemSpan(maxLineSpan) }) {
                     StorefrontHero(
@@ -618,7 +592,8 @@ private fun LibraryScreen(
                         state = installStates[app.packageName] ?: InstallState.Idle,
                         onOpen = onOpen,
                         onLaunch = onLaunch,
-                        onInstall = onInstall
+                        onInstall = onInstall,
+                        uniformHeight = wideLayout
                     )
                 }
             }
@@ -709,12 +684,17 @@ private fun StorefrontAppCard(
     state: InstallState,
     onOpen: (AppEntry) -> Unit,
     onLaunch: (AppEntry) -> Unit,
-    onInstall: (AppEntry) -> Unit
+    onInstall: (AppEntry) -> Unit,
+    uniformHeight: Boolean = false
 ) {
     val accent = Color(app.accent)
+    val cardModifier = if (uniformHeight) {
+        Modifier.fillMaxWidth().height(216.dp)
+    } else {
+        Modifier.fillMaxWidth()
+    }
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
+        modifier = cardModifier
             .clip(RoundedCornerShape(24.dp))
             .background(SurfaceRaised)
             .clickable { onOpen(app) }
@@ -744,7 +724,7 @@ private fun StorefrontAppCard(
             maxLines = 2,
             overflow = TextOverflow.Ellipsis
         )
-        Spacer(Modifier.height(15.dp))
+        if (uniformHeight) Spacer(Modifier.weight(1f)) else Spacer(Modifier.height(15.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             val status = when {
                 installed.requiresReplacement(app) -> "Replace required"
@@ -1024,7 +1004,7 @@ private fun AppDetail(
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wideLayout = maxWidth >= 840.dp
         val sidePadding = if (wideLayout) {
-            ((maxWidth - 1040.dp) / 2f).coerceAtLeast(32.dp)
+            ((maxWidth - 1120.dp) / 2f).coerceAtLeast(32.dp)
         } else {
             20.dp
         }
@@ -1033,12 +1013,48 @@ private fun AppDetail(
             verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
             item {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    AppIcon(app, 84)
-                    Spacer(Modifier.width(16.dp))
+                val accent = Color(app.accent)
+                val headerModifier = if (wideLayout) {
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(28.dp))
+                        .background(SurfaceRaised)
+                        .padding(24.dp)
+                } else {
+                    Modifier.fillMaxWidth()
+                }
+                Row(modifier = headerModifier, verticalAlignment = Alignment.CenterVertically) {
+                    AppIcon(app, if (wideLayout) 104 else 84)
+                    Spacer(Modifier.width(if (wideLayout) 22.dp else 16.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(app.name, color = TextPrimary, fontSize = 28.sp, fontWeight = FontWeight.Bold, maxLines = 2)
-                        Text(app.tagline, color = TextSecondary, fontSize = 13.sp)
+                        if (wideLayout) {
+                            Text(
+                                app.category.uppercase(),
+                                color = accent,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Black,
+                                letterSpacing = 1.3.sp
+                            )
+                            Spacer(Modifier.height(5.dp))
+                        }
+                        Text(
+                            app.name,
+                            color = TextPrimary,
+                            fontSize = if (wideLayout) 34.sp else 28.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 2
+                        )
+                        Spacer(Modifier.height(if (wideLayout) 5.dp else 1.dp))
+                        Text(
+                            app.tagline,
+                            color = TextSecondary,
+                            fontSize = if (wideLayout) 15.sp else 13.sp,
+                            lineHeight = if (wideLayout) 21.sp else 18.sp
+                        )
+                        if (wideLayout) {
+                            Spacer(Modifier.height(8.dp))
+                            Text("by ${app.developer}", color = Color(0xFF80838A), fontSize = 11.sp)
+                        }
                     }
                 }
             }
@@ -1046,43 +1062,84 @@ private fun AppDetail(
                 val busy = state.isBusy()
                 val replacementRequired = installed.requiresReplacement(app)
                 val canOpen = installed.installed && !installed.hasUpdate(app) && !replacementRequired
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    Button(
-                        onClick = if (canOpen) onOpen else onInstall,
-                        enabled = !busy,
-                        modifier = Modifier.height(44.dp),
-                        shape = CircleShape,
-                        contentPadding = PaddingValues(horizontal = 22.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (canOpen) Color(0xFF26282C) else Acid,
-                            contentColor = if (canOpen) TextPrimary else Ink
-                        )
-                    ) {
-                        Text(
-                            when {
-                                state is InstallState.Downloading -> state.progress?.let { "${(it * 100).toInt()}%" } ?: "Downloading"
-                                state is InstallState.Verifying -> "Verifying"
-                                state is InstallState.Installing -> "Installing"
-                                state is InstallState.AwaitingPermission -> "Allow install"
-                                replacementRequired -> "Replace"
-                                installed.hasUpdate(app) -> "Update"
-                                installed.installed -> "Open"
-                                else -> "Install"
-                            },
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
+                val actionModifier = if (wideLayout) {
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(Color(0xFF111214))
+                        .padding(18.dp)
+                } else {
+                    Modifier.fillMaxWidth()
                 }
-                when (state) {
-                    is InstallState.Downloading -> {
-                        Spacer(Modifier.height(10.dp))
-                        DownloadProgress(state)
+                Column(actionModifier) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        if (wideLayout) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    when {
+                                        replacementRequired -> "Replacement required"
+                                        installed.hasUpdate(app) -> "Update available"
+                                        installed.installed -> "Installed and current"
+                                        else -> "Ready to install"
+                                    },
+                                    color = TextPrimary,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    when {
+                                        replacementRequired -> "Android needs the existing copy removed before this signer can be installed."
+                                        installed.hasUpdate(app) -> "${installed.versionName ?: "Installed"} → ${app.versionName}"
+                                        installed.installed -> installed.versionName ?: app.versionName
+                                        else -> "${app.versionName} · ${trustLabel(app.trust)}"
+                                    },
+                                    color = TextSecondary,
+                                    fontSize = 11.sp,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            Spacer(Modifier.width(18.dp))
+                        } else {
+                            Spacer(Modifier.weight(1f))
+                        }
+                        Button(
+                            onClick = if (canOpen) onOpen else onInstall,
+                            enabled = !busy,
+                            modifier = Modifier.height(44.dp),
+                            shape = CircleShape,
+                            contentPadding = PaddingValues(horizontal = 22.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (canOpen) Color(0xFF26282C) else Acid,
+                                contentColor = if (canOpen) TextPrimary else Ink
+                            )
+                        ) {
+                            Text(
+                                when {
+                                    state is InstallState.Downloading -> state.progress?.let { "${(it * 100).toInt()}%" } ?: "Downloading"
+                                    state is InstallState.Verifying -> "Verifying"
+                                    state is InstallState.Installing -> "Installing"
+                                    state is InstallState.AwaitingPermission -> "Allow install"
+                                    replacementRequired -> "Replace"
+                                    installed.hasUpdate(app) -> "Update"
+                                    installed.installed -> "Open"
+                                    else -> "Install"
+                                },
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
-                    is InstallState.Failed -> {
-                        Spacer(Modifier.height(8.dp))
-                        Text(state.message, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                    when (state) {
+                        is InstallState.Downloading -> {
+                            Spacer(Modifier.height(10.dp))
+                            DownloadProgress(state)
+                        }
+                        is InstallState.Failed -> {
+                            Spacer(Modifier.height(8.dp))
+                            Text(state.message, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                        }
+                        else -> Unit
                     }
-                    else -> Unit
                 }
             }
             item { Metadata(app) }
@@ -1309,21 +1366,17 @@ private fun ReadmePanel(content: String, markdown: Boolean = true, repository: S
             repository = repository,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(640.dp)
                 .clip(RoundedCornerShape(20.dp))
                 .background(Color(0xFF111214))
         )
         return
     }
 
-    val scrollState = rememberScrollState()
     Box(
         Modifier
             .fillMaxWidth()
-            .heightIn(max = 640.dp)
             .clip(RoundedCornerShape(20.dp))
             .background(Color(0xFF111214))
-            .verticalScroll(scrollState)
             .padding(16.dp)
     ) {
         Text(content, color = TextSecondary, fontSize = 14.sp, lineHeight = 21.sp)

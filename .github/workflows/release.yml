@@ -23,6 +23,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GITHUB_TOKEN: ${{ github.token }}
       LIBRARY_GITHUB_OWNER: ${{ github.repository_owner }}
+      LIBRARY_CATALOG_APP_CLIENT_ID: ${{ vars.LIBRARY_CATALOG_APP_CLIENT_ID }}
       LIBRARY_SIGNING_STORE_PASSWORD: ${{ secrets.LIBRARY_SIGNING_STORE_PASSWORD }}
       LIBRARY_SIGNING_KEY_ALIAS: ${{ secrets.LIBRARY_SIGNING_KEY_ALIAS }}
       LIBRARY_SIGNING_KEY_PASSWORD: ${{ secrets.LIBRARY_SIGNING_KEY_PASSWORD }}
@@ -98,6 +99,16 @@ jobs:
         if: steps.version.outputs.should_release == 'true'
         with:
           gradle-version: '9.5.0'
+
+      - name: Require GitHub App client ID
+        if: steps.version.outputs.should_release == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${LIBRARY_CATALOG_APP_CLIENT_ID:-}" ]]; then
+            echo "Missing required repository variable: LIBRARY_CATALOG_APP_CLIENT_ID" >&2
+            exit 1
+          fi
 
       - name: Require stable signing identity
         if: steps.version.outputs.should_release == 'true'
