@@ -105,13 +105,6 @@ internal fun GitHubAuthContent(
             Text("GitHub App · device sign-in", color = TextSecondary, fontSize = 11.sp)
         }
     }
-    Spacer(Modifier.height(12.dp))
-    Text(
-        "Library uses GitHub's device sign-in instead of asking you to create or paste a PAT. The resulting session is stored with Android Keystore and can be renewed without a client secret.",
-        color = TextSecondary,
-        fontSize = 12.sp,
-        lineHeight = 17.sp
-    )
 
     pending?.let { code ->
         Spacer(Modifier.height(14.dp))
