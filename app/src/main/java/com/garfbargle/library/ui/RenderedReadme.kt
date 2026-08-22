@@ -2,12 +2,21 @@ package com.garfbargle.library.ui
 
 import android.content.Intent
 import android.graphics.Color as AndroidColor
+import android.view.View
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import kotlin.math.roundToInt
 
 @Composable
 internal fun RenderedReadme(
@@ -17,9 +26,22 @@ internal fun RenderedReadme(
 ) {
     val baseUrl = repository?.let { "https://github.com/$it/raw/HEAD/" } ?: "https://github.com/"
     val document = readmeHtmlDocument(html)
+    val documentKey = remember(baseUrl, document) { "$baseUrl:${document.hashCode()}" }
+    var contentHeightPx by remember(documentKey) { mutableIntStateOf(0) }
+    val density = LocalDensity.current
+    val targetHeight = with(density) {
+        val minHeightPx = 320.dp.toPx().roundToInt()
+        val maxHeightPx = 6000.dp.toPx().roundToInt()
+        contentHeightPx.coerceIn(minHeightPx, maxHeightPx).toDp()
+    }
+
+    fun updateContentHeight(webView: WebView) {
+        val measured = (webView.contentHeight * webView.scale).roundToInt()
+        if (measured > 0 && measured != contentHeightPx) contentHeightPx = measured
+    }
 
     AndroidView(
-        modifier = modifier,
+        modifier = modifier.height(targetHeight),
         factory = { context ->
             WebView(context).apply {
                 setBackgroundColor(AndroidColor.TRANSPARENT)
@@ -29,6 +51,10 @@ internal fun RenderedReadme(
                 settings.allowContentAccess = false
                 settings.loadsImagesAutomatically = true
                 settings.blockNetworkImage = false
+                isVerticalScrollBarEnabled = false
+                isHorizontalScrollBarEnabled = false
+                isNestedScrollingEnabled = false
+                overScrollMode = View.OVER_SCROLL_NEVER
                 webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                         val uri = request?.url ?: return true
@@ -39,11 +65,21 @@ internal fun RenderedReadme(
                         }
                         return true
                     }
+
+                    override fun onPageFinished(view: WebView?, url: String?) {
+                        val webView = view ?: return
+                        webView.post { updateContentHeight(webView) }
+                        webView.postDelayed({ updateContentHeight(webView) }, 250L)
+                        webView.postDelayed({ updateContentHeight(webView) }, 1000L)
+                    }
                 }
             }
         },
         update = { webView ->
-            webView.loadDataWithBaseURL(baseUrl, document, "text/html", "utf-8", null)
+            if (webView.tag != documentKey) {
+                webView.tag = documentKey
+                webView.loadDataWithBaseURL(baseUrl, document, "text/html", "utf-8", null)
+            }
         }
     )
 }
