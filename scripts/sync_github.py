@@ -24,6 +24,12 @@ API = "https://api.github.com"
 PACKAGE = re.compile(r"package: name='([^']+)' versionCode='([^']+)' versionName='([^']*)'(?:.* split='([^']+)')?")
 ICON = re.compile(r"application-icon-(\d+):'([^']+)'" )
 ICON_FALLBACK = re.compile(r"application-icon:'([^']+)'" )
+ICON_MIME_TYPES = {
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+}
 MAX_ICON_BYTES = 256 * 1024
 DEFAULT_RELEASE_HISTORY_LIMIT = 10
 MAX_RELEASE_HISTORY_LIMIT = 50
@@ -47,16 +53,25 @@ class GitHub:
         with urllib.request.urlopen(self.request(url, authenticated=authenticated), timeout=45) as response:
             return json.loads(response.read())
 
-    def file(self, repo: dict, path: str):
+    def _file_payload(self, repo: dict, path: str):
         url = f"{API}/repos/{repo['full_name']}/contents/{urllib.parse.quote(path, safe='/')}?ref={urllib.parse.quote(repo['default_branch'])}"
         try:
-            data = self.json(url, authenticated=bool(self.token))
+            return self.json(url, authenticated=bool(self.token))
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 return None
             raise
-        if data.get("encoding") == "base64":
+
+    def file(self, repo: dict, path: str):
+        data = self._file_payload(repo, path)
+        if data and data.get("encoding") == "base64":
             return base64.b64decode(data["content"]).decode()
+        return None
+
+    def file_bytes(self, repo: dict, path: str):
+        data = self._file_payload(repo, path)
+        if data and data.get("encoding") == "base64":
+            return base64.b64decode(data["content"])
         return None
 
     def release_json(self, repo: dict, url: str):
@@ -89,14 +104,9 @@ def sha256(path: Path):
     return digest.hexdigest()
 
 
-def _read_icon(apk: zipfile.ZipFile, resource: str, mime_types: dict[str, str]):
-    mime_type = mime_types.get(Path(resource).suffix.lower())
+def _icon_payload(data: bytes, resource: str):
+    mime_type = ICON_MIME_TYPES.get(Path(resource).suffix.lower())
     if not mime_type:
-        return None
-    try:
-        with apk.open(resource) as source:
-            data = source.read(MAX_ICON_BYTES + 1)
-    except KeyError:
         return None
     if not data or len(data) > MAX_ICON_BYTES:
         return None
@@ -104,6 +114,15 @@ def _read_icon(apk: zipfile.ZipFile, resource: str, mime_types: dict[str, str]):
         "mimeType": mime_type,
         "dataBase64": base64.b64encode(data).decode("ascii"),
     }
+
+
+def _read_icon(apk: zipfile.ZipFile, resource: str):
+    try:
+        with apk.open(resource) as source:
+            data = source.read(MAX_ICON_BYTES + 1)
+    except KeyError:
+        return None
+    return _icon_payload(data, resource)
 
 
 def _density_score(resource: str) -> int:
@@ -124,15 +143,9 @@ def extract_icon(path: Path, badging: str):
     if fallback:
         candidates.append((0, fallback.group(1)))
 
-    mime_types = {
-        ".png": "image/png",
-        ".webp": "image/webp",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-    }
     with zipfile.ZipFile(path) as apk:
         for _, resource in sorted(candidates, reverse=True):
-            icon = _read_icon(apk, resource, mime_types)
+            icon = _read_icon(apk, resource)
             if icon:
                 return icon
 
@@ -141,7 +154,7 @@ def extract_icon(path: Path, badging: str):
         raster_fallbacks = [
             name
             for name in apk.namelist()
-            if Path(name).suffix.lower() in mime_types
+            if Path(name).suffix.lower() in ICON_MIME_TYPES
             and Path(name).stem in stems
             and name.startswith("res/")
         ]
@@ -150,7 +163,7 @@ def extract_icon(path: Path, badging: str):
             reverse=True,
         )
         for resource in raster_fallbacks:
-            icon = _read_icon(apk, resource, mime_types)
+            icon = _read_icon(apk, resource)
             if icon:
                 return icon
     return None
@@ -247,6 +260,26 @@ def repos(gh: GitHub, owner: str):
 def metadata(gh: GitHub, repo: dict):
     raw = gh.file(repo, ".library.json")
     return json.loads(raw) if raw else {}
+
+
+def metadata_icon(gh: GitHub, repo: dict, meta: dict):
+    raw = meta.get("iconPath")
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError("iconPath must be a non-empty repository-relative path")
+    path = raw.strip()
+    if path.startswith("/") or ".." in Path(path).parts:
+        raise ValueError("iconPath must stay inside the repository")
+    if Path(path).suffix.lower() not in ICON_MIME_TYPES:
+        raise ValueError("iconPath must point to a PNG, WebP, or JPEG image")
+    data = gh.file_bytes(repo, path)
+    if data is None:
+        raise ValueError(f"iconPath not found: {path}")
+    icon = _icon_payload(data, path)
+    if icon is None:
+        raise ValueError(f"iconPath is empty or exceeds {MAX_ICON_BYTES // 1024} KiB: {path}")
+    return icon
 
 
 def write(path: Path, data: dict):
@@ -378,7 +411,7 @@ def discover_releases(gh: GitHub, repo: dict, meta: dict, aapt2: str, apksigner:
     return resolved
 
 
-def build(repo: dict, release_items: list[dict], meta: dict):
+def build(repo: dict, release_items: list[dict], meta: dict, icon_override: dict | None = None):
     if not release_items:
         raise ValueError("no installable releases")
     latest = release_items[0]
@@ -405,7 +438,7 @@ def build(repo: dict, release_items: list[dict], meta: dict):
         "developer": meta.get("developer") or repo["owner"]["login"],
         "tagline": meta.get("tagline") or repo.get("description") or "Latest release from GitHub.",
         "description": meta.get("description") or repo.get("description") or f"Latest Android release from {repo['full_name']}.",
-        "icon": latest.get("icon"),
+        "icon": icon_override or latest.get("icon"),
         "category": meta.get("category") or "Apps",
         "accent": meta.get("accent") or "#A9FF68",
         "featured": bool(meta.get("featured", False)),
@@ -460,10 +493,11 @@ def main():
             continue
         try:
             meta = metadata(gh, repo)
+            icon_override = metadata_icon(gh, repo, meta)
             release_items = discover_releases(gh, repo, meta, aapt2, apksigner)
             if not release_items:
                 continue
-            manifest = build(repo, release_items, meta)
+            manifest = build(repo, release_items, meta, icon_override)
             write(LIBRARY_MANIFEST if repo["name"].lower() == "library" else OUT / f"{manifest['id']}.json", manifest)
             count += 1
             print(
