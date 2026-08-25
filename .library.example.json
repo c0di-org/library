@@ -2,6 +2,7 @@
   "name": "My App",
   "tagline": "A crisp one-line description.",
   "description": "Optional long-form storefront copy.",
+  "iconPath": "path/to/icon.png",
   "category": "Utilities",
   "accent": "#7BA8FF",
   "featured": false,
