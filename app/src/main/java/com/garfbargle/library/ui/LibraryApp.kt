@@ -1002,191 +1002,405 @@ private fun AppDetail(
     }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
-        val wideLayout = maxWidth >= 840.dp
-        val sidePadding = if (wideLayout) {
-            ((maxWidth - 1120.dp) / 2f).coerceAtLeast(32.dp)
-        } else {
-            20.dp
-        }
-        LazyColumn(
-            contentPadding = PaddingValues(start = sidePadding, end = sidePadding, top = 82.dp, bottom = 70.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp)
-        ) {
-            item {
-                val accent = Color(app.accent)
-                val headerModifier = if (wideLayout) {
-                    Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(28.dp))
-                        .background(SurfaceRaised)
-                        .padding(24.dp)
-                } else {
-                    Modifier.fillMaxWidth()
-                }
-                Row(modifier = headerModifier, verticalAlignment = Alignment.CenterVertically) {
-                    AppIcon(app, if (wideLayout) 104 else 84)
-                    Spacer(Modifier.width(if (wideLayout) 22.dp else 16.dp))
-                    Column(Modifier.weight(1f)) {
-                        if (wideLayout) {
-                            Text(
-                                app.category.uppercase(),
-                                color = accent,
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Black,
-                                letterSpacing = 1.3.sp
-                            )
-                            Spacer(Modifier.height(5.dp))
-                        }
-                        Text(
-                            app.name,
-                            color = TextPrimary,
-                            fontSize = if (wideLayout) 34.sp else 28.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 2
-                        )
-                        Spacer(Modifier.height(if (wideLayout) 5.dp else 1.dp))
-                        Text(
-                            app.tagline,
-                            color = TextSecondary,
-                            fontSize = if (wideLayout) 15.sp else 13.sp,
-                            lineHeight = if (wideLayout) 21.sp else 18.sp
-                        )
-                        if (wideLayout) {
-                            Spacer(Modifier.height(8.dp))
-                            Text("by ${app.developer}", color = Color(0xFF80838A), fontSize = 11.sp)
-                        }
-                    }
-                }
-            }
-            item {
-                val busy = state.isBusy()
-                val replacementRequired = installed.requiresReplacement(app)
-                val canOpen = installed.installed && !installed.hasUpdate(app) && !replacementRequired
-                val actionModifier = if (wideLayout) {
-                    Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(20.dp))
-                        .background(Color(0xFF111214))
-                        .padding(18.dp)
-                } else {
-                    Modifier.fillMaxWidth()
-                }
-                Column(actionModifier) {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        if (wideLayout) {
-                            Column(Modifier.weight(1f)) {
-                                Text(
-                                    when {
-                                        replacementRequired -> "Replacement required"
-                                        installed.hasUpdate(app) -> "Update available"
-                                        installed.installed -> "Installed and current"
-                                        else -> "Ready to install"
-                                    },
-                                    color = TextPrimary,
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                Text(
-                                    when {
-                                        replacementRequired -> "Android needs the existing copy removed before this signer can be installed."
-                                        installed.hasUpdate(app) -> "${installed.versionName ?: "Installed"} → ${app.versionName}"
-                                        installed.installed -> installed.versionName ?: app.versionName
-                                        else -> "${app.versionName} · ${trustLabel(app.trust)}"
-                                    },
-                                    color = TextSecondary,
-                                    fontSize = 11.sp,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                            Spacer(Modifier.width(18.dp))
-                        } else {
-                            Spacer(Modifier.weight(1f))
-                        }
-                        Button(
-                            onClick = if (canOpen) onOpen else onInstall,
-                            enabled = !busy,
-                            modifier = Modifier.height(44.dp),
-                            shape = CircleShape,
-                            contentPadding = PaddingValues(horizontal = 22.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (canOpen) Color(0xFF26282C) else Acid,
-                                contentColor = if (canOpen) TextPrimary else Ink
-                            )
-                        ) {
-                            Text(
-                                when {
-                                    state is InstallState.Downloading -> state.progress?.let { "${(it * 100).toInt()}%" } ?: "Downloading"
-                                    state is InstallState.Verifying -> "Verifying"
-                                    state is InstallState.Installing -> "Installing"
-                                    state is InstallState.AwaitingPermission -> "Allow install"
-                                    replacementRequired -> "Replace"
-                                    installed.hasUpdate(app) -> "Update"
-                                    installed.installed -> "Open"
-                                    else -> "Install"
-                                },
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-                    when (state) {
-                        is InstallState.Downloading -> {
-                            Spacer(Modifier.height(10.dp))
-                            DownloadProgress(state)
-                        }
-                        is InstallState.Failed -> {
-                            Spacer(Modifier.height(8.dp))
-                            Text(state.message, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
-                        }
-                        else -> Unit
-                    }
-                }
-            }
-            item { Metadata(app) }
-            if (app.availableReleases().size > 1) {
-                item { VersionsSection(app, installed, state, onInstallRelease) }
-            }
-            if (app.sourceUrl != null || app.releaseUrl != null) {
-                item {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        if (app.sourceUrl != null) {
-                            OutlinedButton(onClick = onSource, modifier = Modifier.weight(1f), shape = RoundedCornerShape(16.dp)) {
-                                Icon(Icons.Default.Source, null, modifier = Modifier.size(17.dp))
-                                Spacer(Modifier.width(7.dp))
-                                Text("Source")
-                            }
-                        }
-                        if (app.releaseUrl != null) {
-                            OutlinedButton(onClick = onRelease, modifier = Modifier.weight(1f), shape = RoundedCornerShape(16.dp)) {
-                                Icon(Icons.Default.OpenInNew, null, modifier = Modifier.size(17.dp))
-                                Spacer(Modifier.width(7.dp))
-                                Text("Release")
-                            }
-                        }
-                    }
-                }
-            }
-            if (app.changelog.isNotEmpty()) item { ReleaseNotes(app) }
-            item { ReadmeSection(app, readme, readmeLoaded) }
-            item { SecurityDisclosure(app, installed) }
-            item {
-                Text(app.packageName, color = Color(0xFF62646B), fontSize = 10.sp)
-                Text("by ${app.developer}", color = Color(0xFF62646B), fontSize = 10.sp)
-            }
-        }
+        val desktopLayout = maxWidth >= 1000.dp
+        val tabletLayout = maxWidth >= 700.dp
 
+        if (desktopLayout) {
+            val workspacePadding = ((maxWidth - 1320.dp) / 2f).coerceAtLeast(24.dp)
+            val sidebarWidth = if (maxWidth >= 1200.dp) 360.dp else 320.dp
+
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(start = workspacePadding, end = workspacePadding, top = 24.dp, bottom = 24.dp),
+                horizontalArrangement = Arrangement.spacedBy(28.dp)
+            ) {
+                LazyColumn(
+                    modifier = Modifier.width(sidebarWidth).fillMaxHeight(),
+                    contentPadding = PaddingValues(bottom = 28.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    item { DetailTopBar(app, onBack, showCategory = false) }
+                    item { DetailIdentityCard(app, compact = false, railStyle = true) }
+                    item {
+                        DetailActionCard(
+                            app = app,
+                            installed = installed,
+                            state = state,
+                            stacked = true,
+                            onInstall = onInstall,
+                            onOpen = onOpen
+                        )
+                    }
+                    item { Metadata(app) }
+                    if (app.sourceUrl != null || app.releaseUrl != null) {
+                        item { DetailLinks(app, onSource, onRelease) }
+                    }
+                    item { DetailPackageCard(app) }
+                }
+
+                LazyColumn(
+                    modifier = Modifier.weight(1f).fillMaxHeight(),
+                    contentPadding = PaddingValues(bottom = 48.dp),
+                    verticalArrangement = Arrangement.spacedBy(18.dp)
+                ) {
+                    item {
+                        Column(Modifier.padding(top = 4.dp, bottom = 2.dp)) {
+                            Text("Overview", color = TextPrimary, fontSize = 30.sp, fontWeight = FontWeight.Bold)
+                            Text(
+                                "Details, release history, documentation, and verification for ${app.name}.",
+                                color = TextSecondary,
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
+                    item { DetailAboutCard(app) }
+                    if (app.availableReleases().size > 1) {
+                        item { VersionsSection(app, installed, state, onInstallRelease) }
+                    }
+                    if (app.changelog.isNotEmpty()) item { ReleaseNotes(app) }
+                    item { ReadmeSection(app, readme, readmeLoaded) }
+                    item { SecurityDisclosure(app, installed) }
+                    item {
+                        Text(
+                            "${app.packageName} · ${trustLabel(app.trust)}",
+                            color = Color(0xFF62646B),
+                            fontSize = 10.sp
+                        )
+                    }
+                }
+            }
+        } else {
+            val maxContentWidth = if (tabletLayout) 860.dp else maxWidth
+            val horizontalPadding = if (tabletLayout) 28.dp else 20.dp
+
+            LazyColumn(
+                modifier = Modifier
+                    .widthIn(max = maxContentWidth)
+                    .fillMaxWidth()
+                    .fillMaxHeight()
+                    .align(Alignment.TopCenter),
+                contentPadding = PaddingValues(
+                    start = horizontalPadding,
+                    end = horizontalPadding,
+                    top = if (tabletLayout) 24.dp else 18.dp,
+                    bottom = 56.dp
+                ),
+                verticalArrangement = Arrangement.spacedBy(if (tabletLayout) 18.dp else 16.dp)
+            ) {
+                item { DetailTopBar(app, onBack, showCategory = !tabletLayout) }
+                item { DetailIdentityCard(app, compact = !tabletLayout, railStyle = false) }
+                item {
+                    DetailActionCard(
+                        app = app,
+                        installed = installed,
+                        state = state,
+                        stacked = !tabletLayout,
+                        onInstall = onInstall,
+                        onOpen = onOpen
+                    )
+                }
+                item { Metadata(app) }
+                item { DetailAboutCard(app) }
+                if (app.availableReleases().size > 1) {
+                    item { VersionsSection(app, installed, state, onInstallRelease) }
+                }
+                if (app.sourceUrl != null || app.releaseUrl != null) {
+                    item { DetailLinks(app, onSource, onRelease) }
+                }
+                if (app.changelog.isNotEmpty()) item { ReleaseNotes(app) }
+                item { ReadmeSection(app, readme, readmeLoaded) }
+                item { SecurityDisclosure(app, installed) }
+                item {
+                    Text(app.packageName, color = Color(0xFF62646B), fontSize = 10.sp)
+                    Text("by ${app.developer}", color = Color(0xFF62646B), fontSize = 10.sp)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DetailTopBar(app: AppEntry, onBack: () -> Unit, showCategory: Boolean) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Surface(
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(start = (sidePadding - 8.dp).coerceAtLeast(12.dp), top = 12.dp),
             shape = CircleShape,
             color = Color(0xE61A1B1E),
-            shadowElevation = 8.dp
+            shadowElevation = 6.dp
         ) {
             IconButton(onClick = onBack) {
                 Icon(Icons.Default.ArrowBack, "Back", tint = TextPrimary)
             }
         }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                "APP DETAILS",
+                color = Color(0xFF777A82),
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Black,
+                letterSpacing = 1.5.sp
+            )
+            if (showCategory) {
+                Text(
+                    app.category,
+                    color = TextSecondary,
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DetailIdentityCard(app: AppEntry, compact: Boolean, railStyle: Boolean) {
+    val accent = Color(app.accent)
+    val modifier = Modifier
+        .fillMaxWidth()
+        .clip(RoundedCornerShape(if (railStyle) 30.dp else 28.dp))
+        .background(accent.copy(alpha = if (railStyle) 0.14f else 0.11f))
+        .padding(if (compact) 18.dp else 22.dp)
+
+    if (railStyle) {
+        Column(modifier) {
+            AppIcon(app, 104)
+            Spacer(Modifier.height(20.dp))
+            Text(
+                app.category.uppercase(),
+                color = accent,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Black,
+                letterSpacing = 1.4.sp
+            )
+            Spacer(Modifier.height(5.dp))
+            Text(
+                app.name,
+                color = TextPrimary,
+                fontSize = 30.sp,
+                lineHeight = 34.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.height(7.dp))
+            Text(app.tagline, color = TextSecondary, fontSize = 14.sp, lineHeight = 20.sp)
+            Spacer(Modifier.height(12.dp))
+            Text("by ${app.developer}", color = Color(0xFF8A8D94), fontSize = 11.sp)
+        }
+    } else {
+        Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
+            AppIcon(app, if (compact) 84 else 108)
+            Spacer(Modifier.width(if (compact) 16.dp else 22.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    app.category.uppercase(),
+                    color = accent,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 1.3.sp
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    app.name,
+                    color = TextPrimary,
+                    fontSize = if (compact) 27.sp else 34.sp,
+                    lineHeight = if (compact) 31.sp else 38.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    app.tagline,
+                    color = TextSecondary,
+                    fontSize = if (compact) 13.sp else 15.sp,
+                    lineHeight = if (compact) 18.sp else 21.sp,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (!compact) {
+                    Spacer(Modifier.height(7.dp))
+                    Text("by ${app.developer}", color = Color(0xFF85878E), fontSize = 11.sp)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DetailActionCard(
+    app: AppEntry,
+    installed: InstalledState,
+    state: InstallState,
+    stacked: Boolean,
+    onInstall: () -> Unit,
+    onOpen: () -> Unit
+) {
+    val busy = state.isBusy()
+    val replacementRequired = installed.requiresReplacement(app)
+    val canOpen = installed.installed && !installed.hasUpdate(app) && !replacementRequired
+    val title = when {
+        replacementRequired -> "Replacement required"
+        installed.hasUpdate(app) -> "Update available"
+        installed.installed -> "Installed and current"
+        else -> "Ready to install"
+    }
+    val detail = when {
+        replacementRequired -> "Android needs the existing copy removed before this signer can be installed."
+        installed.hasUpdate(app) -> "${installed.versionName ?: "Installed"} → ${app.versionName}"
+        installed.installed -> installed.versionName ?: app.versionName
+        else -> "${app.versionName} · ${trustLabel(app.trust)}"
+    }
+    val actionLabel = when (state) {
+        is InstallState.Downloading -> state.progress?.let { "${(it * 100).toInt()}%" } ?: "Downloading"
+        InstallState.Verifying -> "Verifying"
+        InstallState.Installing -> "Installing"
+        InstallState.AwaitingPermission -> "Allow install"
+        else -> when {
+            replacementRequired -> "Replace"
+            installed.hasUpdate(app) -> "Update"
+            installed.installed -> "Open"
+            else -> "Install"
+        }
+    }
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(22.dp))
+            .background(Color(0xFF111214))
+            .padding(18.dp)
+    ) {
+        if (stacked) {
+            Text(title, color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(3.dp))
+            Text(detail, color = TextSecondary, fontSize = 11.sp, lineHeight = 16.sp)
+            Spacer(Modifier.height(14.dp))
+            Button(
+                onClick = if (canOpen) onOpen else onInstall,
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth().height(46.dp),
+                shape = RoundedCornerShape(15.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (canOpen) Color(0xFF26282C) else Acid,
+                    contentColor = if (canOpen) TextPrimary else Ink
+                )
+            ) {
+                Text(actionLabel, fontWeight = FontWeight.Bold)
+            }
+        } else {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(title, color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(3.dp))
+                    Text(
+                        detail,
+                        color = TextSecondary,
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Spacer(Modifier.width(20.dp))
+                Button(
+                    onClick = if (canOpen) onOpen else onInstall,
+                    enabled = !busy,
+                    modifier = Modifier.height(46.dp),
+                    shape = CircleShape,
+                    contentPadding = PaddingValues(horizontal = 24.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (canOpen) Color(0xFF26282C) else Acid,
+                        contentColor = if (canOpen) TextPrimary else Ink
+                    )
+                ) {
+                    Text(actionLabel, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+
+        when (state) {
+            is InstallState.Downloading -> {
+                Spacer(Modifier.height(12.dp))
+                DownloadProgress(state)
+            }
+            is InstallState.Failed -> {
+                Spacer(Modifier.height(10.dp))
+                Text(state.message, color = MaterialTheme.colorScheme.error, fontSize = 12.sp, lineHeight = 17.sp)
+            }
+            else -> Unit
+        }
+    }
+}
+
+@Composable
+private fun DetailAboutCard(app: AppEntry) {
+    val accent = Color(app.accent)
+    val context = listOfNotNull(
+        app.publishedAt?.take(10)?.let { "Released $it" },
+        app.repository?.let { "GitHub · $it" }
+    ).joinToString("  ·  ")
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(22.dp))
+            .background(SurfaceRaised)
+            .padding(20.dp)
+    ) {
+        Text("ABOUT", color = accent, fontSize = 10.sp, fontWeight = FontWeight.Black, letterSpacing = 1.4.sp)
+        Spacer(Modifier.height(9.dp))
+        Text(app.description, color = Color(0xFFD0D2D8), fontSize = 14.sp, lineHeight = 21.sp)
+        if (context.isNotBlank()) {
+            Spacer(Modifier.height(14.dp))
+            Text(context, color = Color(0xFF777A82), fontSize = 10.sp, lineHeight = 15.sp)
+        }
+    }
+}
+
+@Composable
+private fun DetailLinks(app: AppEntry, onSource: () -> Unit, onRelease: () -> Unit) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        if (app.sourceUrl != null) {
+            OutlinedButton(onClick = onSource, modifier = Modifier.weight(1f), shape = RoundedCornerShape(16.dp)) {
+                Icon(Icons.Default.Source, null, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.width(7.dp))
+                Text("Source")
+            }
+        }
+        if (app.releaseUrl != null) {
+            OutlinedButton(onClick = onRelease, modifier = Modifier.weight(1f), shape = RoundedCornerShape(16.dp)) {
+                Icon(Icons.Default.OpenInNew, null, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.width(7.dp))
+                Text("Release")
+            }
+        }
+    }
+}
+
+@Composable
+private fun DetailPackageCard(app: AppEntry) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(Color(0xFF0F1012))
+            .padding(15.dp)
+    ) {
+        Text("PACKAGE", color = Color(0xFF656870), fontSize = 9.sp, fontWeight = FontWeight.Black, letterSpacing = 1.2.sp)
+        Spacer(Modifier.height(5.dp))
+        Text(
+            app.packageName,
+            color = TextSecondary,
+            fontSize = 11.sp,
+            fontFamily = FontFamily.Monospace,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+        Spacer(Modifier.height(6.dp))
+        Text("${trustLabel(app.trust)} · Android ${app.minSdk}+", color = Color(0xFF6D7078), fontSize = 10.sp)
     }
 }
 
