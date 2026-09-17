@@ -80,7 +80,9 @@ jobs:
           printf 'Catalog refresh requested by %s (%s, release %s, delivery %s)\n' \
             "$SOURCE_REPOSITORY" "$RELEASE_TAG" "$RELEASE_ID" "$DELIVERY_ID"
 
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: ''
 
       - name: Install APK inspection tools
         run: sdkmanager "build-tools;36.0.0"
