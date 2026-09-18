@@ -34,7 +34,7 @@ concurrency:
 
 jobs:
   trace:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, nucchuck]
     timeout-minutes: 5
     env:
       SOURCE_REPOSITORY: ${{ inputs.source_repository }}
@@ -58,7 +58,7 @@ jobs:
   sign:
     needs: trace
     environment: production
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, nucchuck]
     timeout-minutes: 45
     env:
       LIBRARY_GITHUB_OWNER: ${{ github.repository_owner }}
