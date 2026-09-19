@@ -426,9 +426,12 @@ def cached_release_item(
 
         reported_size = asset.get("size")
         cached_size = cached_artifact.get("sizeBytes")
+        if reported_size is None and cached_size is None:
+            return None
         if reported_size is not None and cached_size is not None:
             if int(reported_size) != int(cached_size):
                 return None
+        size = int(reported_size if reported_size is not None else cached_size)
 
         artifacts.append(
             {
@@ -436,7 +439,7 @@ def cached_release_item(
                 "downloadUrl": asset.get("browser_download_url") if not private else None,
                 "apiUrl": asset.get("url"),
                 "sha256": reported_digest,
-                "sizeBytes": int(reported_size if reported_size is not None else cached_size),
+                "sizeBytes": size,
                 "abis": list(cached_artifact.get("abis") or []),
                 "authRequired": private,
             }
