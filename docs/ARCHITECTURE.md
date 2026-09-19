@@ -83,9 +83,10 @@ Library Android APK Release ─────────┤
                                      │
                                      ▼
                  installation-aware release discovery
-                         ├─ download exact APK
-                         ├─ package/version/sdk/ABI
-                         ├─ signing certificate
+                         ├─ compare GitHub asset SHA-256 with prior catalog
+                         ├─ reuse verified metadata for unchanged APK bytes
+                         ├─ download/inspect only new or changed APKs
+                         ├─ package/version/sdk/ABI + signing certificate
                          ├─ SHA-256 exact bytes
                          └─ optional .library.json
                                      │
@@ -119,6 +120,10 @@ Public releases work anonymously. Catalog discovery uses a short-lived GitHub Ap
 On Android, GitHub App Device Flow gives a signed-in user access only to repositories that both the user and the App installation can reach. Library stores the resulting session using Android Keystore. Authorization is sent only to `api.github.com` and is not forwarded to release-CDN redirects.
 
 The bundled catalog lets the client start offline. Normal live refresh reads the newest published `catalog-*` GitHub Release.
+
+Catalog reconciliation is intentionally incremental without weakening the verification boundary. The workflow restores the newest immutable catalog snapshot and treats it only as an inspection cache: a release is reused only when GitHub's current server-reported SHA-256 for every APK asset matches the SHA-256 previously computed from downloaded bytes. New, replaced, renamed, or digest-less APK assets are downloaded and inspected again. The workflow still enumerates repositories and releases on every reconciliation so deletions and metadata changes are noticed, but it does not repeatedly transfer unchanged APK history.
+
+If reconciliation produces the same catalog content, ignoring only generated timestamps, no new catalog release or workflow artifact is published. The six-hour recovery schedule therefore checks state without creating an endless stream of identical catalog releases.
 
 ## Release selection
 
