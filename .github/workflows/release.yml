@@ -50,9 +50,11 @@ jobs:
           fi
           VERSION_CODE=$((MAJOR * 1000000 + MINOR * 1000 + PATCH))
 
+          # Catalog snapshots can outnumber app releases, so page through all releases
+          # instead of letting the first 100 catalog-* entries hide the latest vX.Y.Z.
           LATEST="$({
-            gh release list --limit 100 --json tagName,isDraft,isPrerelease \
-              --jq '.[] | select(.isDraft == false and .isPrerelease == false) | .tagName' \
+            gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name' \
               | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
               | sed 's/^v//' \
               | sort -V \
@@ -88,8 +90,10 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v4
         if: steps.version.outputs.should_release == 'true'
+        with:
+          packages: ''
 
       - name: Install Android SDK
         if: steps.version.outputs.should_release == 'true'

@@ -89,7 +89,9 @@ jobs:
           LIBRARY_GITHUB_TOKEN: ${{ steps.signing-app.outputs.token }}
         run: python3 scripts/resolve_managed_app.py
 
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: ''
 
       - name: Install APK signing tools
         id: signing-tools
