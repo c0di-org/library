@@ -41,6 +41,7 @@ jobs:
       - name: Validate helper scripts
         run: |
           python3 -m py_compile scripts/*.py
+          python3 -m unittest discover -s scripts -p 'test_*.py'
           for script in scripts/*.sh; do bash -n "$script"; done
           node --check infra/catalog-webhook/worker.mjs
           node --check infra/catalog-webhook/worker-entry.mjs
