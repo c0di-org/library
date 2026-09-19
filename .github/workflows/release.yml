@@ -50,10 +50,186 @@ jobs:
           fi
           VERSION_CODE=$((MAJOR * 1000000 + MINOR * 1000 + PATCH))
 
+          # Catalog snapshots can outnumber app releases, so page through all releases
+          # instead of letting the first 100 catalog-* entries hide the latest vX.Y.Z.
           LATEST="$({
-            gh release list --limit 100 --json tagName,isDraft,isPrerelease \
-              --jq '.[] | select(.isDraft == false and .isPrerelease == false) | .tagName' \
-              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name' \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+          LATEST="${LATEST:-0.0.0}"
+
+          SHOULD_RELEASE=false
+          if [[ "$VERSION" != "$LATEST" ]] && \
+             [[ "$(printf '%s\n%s\n' "$LATEST" "$VERSION" | sort -V | tail -n 1)" == "$VERSION" ]]; then
+            SHOULD_RELEASE=true
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "should_release=$SHOULD_RELEASE" >> "$GITHUB_OUTPUT"
+
+          if [[ "$SHOULD_RELEASE" == "true" ]]; then
+            echo "Library $VERSION is newer than published $LATEST; release will run." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Library $VERSION is not newer than published $LATEST; nothing to release." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: No release needed
+        if: steps.version.outputs.should_release != 'true'
+        run: echo "Skipping release because LIBRARY_VERSION is not higher than the latest published version."
+
+      - uses: actions/setup-java@v5
+        if: steps.version.outputs.should_release == 'true'
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v4
+        if: steps.version.outputs.should_release == 'true'
+        with:
+          packages: ''
+
+      - name: Install Android SDK
+        if: steps.version.outputs.should_release == 'true'
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - uses: gradle/actions/setup-gradle@v4
+        if: steps.version.outputs.should_release == 'true'
+        with:
+          gradle-version: '9.5.0'
+
+      - name: Require GitHub App client ID
+        if: steps.version.outputs.should_release == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${LIBRARY_CATALOG_APP_CLIENT_ID:-}" ]]; then
+            echo "Missing required repository variable: LIBRARY_CATALOG_APP_CLIENT_ID" >&2
+            exit 1
+          fi
+
+      - name: Require stable signing identity
+        if: steps.version.outputs.should_release == 'true'
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.LIBRARY_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          for name in KEYSTORE_BASE64 LIBRARY_SIGNING_STORE_PASSWORD LIBRARY_SIGNING_KEY_ALIAS LIBRARY_SIGNING_KEY_PASSWORD; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Missing required release-signing secret: $name" >&2
+              exit 1
+            fi
+          done
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/library-release.jks"
+          chmod 600 "$RUNNER_TEMP/library-release.jks"
+          echo "LIBRARY_SIGNING_STORE_FILE=$RUNNER_TEMP/library-release.jks" >> "$GITHUB_ENV"
+
+      - name: Bundle latest published catalog snapshot
+        if: steps.version.outputs.should_release == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p app/src/main/assets
+
+          LATEST_CATALOG_TAG="$(
+            gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq '[.[] | select(.draft == false and .prerelease == false and (.tag_name | startswith("catalog-")))] | sort_by(.published_at // .created_at) | reverse | .[0].tag_name // ""'
+          )"
+
+          if [[ -z "$LATEST_CATALOG_TAG" ]] && gh release view catalog --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            LATEST_CATALOG_TAG=catalog
+          fi
+
+          if [[ -n "$LATEST_CATALOG_TAG" ]]; then
+            SNAPSHOT_DIR="$RUNNER_TEMP/catalog-snapshot"
+            rm -rf "$SNAPSHOT_DIR"
+            mkdir -p "$SNAPSHOT_DIR"
+            gh release download "$LATEST_CATALOG_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern catalog.json \
+              --dir "$SNAPSHOT_DIR"
+            python3 scripts/validate_catalog.py "$SNAPSHOT_DIR/catalog.json"
+            cp "$SNAPSHOT_DIR/catalog.json" app/src/main/assets/catalog.json
+            echo "Bundled $LATEST_CATALOG_TAG as the offline catalog fallback."
+          else
+            python3 scripts/validate_catalog.py app/src/main/assets/catalog.json
+            echo "No published catalog release exists yet; using the checked-in offline fallback."
+          fi
+
+      - name: Lint, test, and build signed release
+        if: steps.version.outputs.should_release == 'true'
+        run: gradle --no-daemon lintRelease testDebugUnitTest assembleRelease
+
+      - name: Verify release signature, package, and version
+        if: steps.version.outputs.should_release == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          VERSION="${{ steps.version.outputs.version }}"
+          VERSION_CODE="${{ steps.version.outputs.version_code }}"
+          APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          AAPT2="$ANDROID_HOME/build-tools/36.0.0/aapt2"
+          test -s "$APK"
+          test -x "$APKSIGNER"
+          test -x "$AAPT2"
+          "$APKSIGNER" verify --verbose --print-certs "$APK"
+          BADGING="$("$AAPT2" dump badging "$APK" | head -n 1)"
+          echo "$BADGING"
+          grep -F "package: name='com.garfbargle.library'" <<< "$BADGING"
+          grep -F "versionCode='$VERSION_CODE'" <<< "$BADGING"
+          grep -F "versionName='$VERSION'" <<< "$BADGING"
+          mkdir -p dist
+          cp "$APK" "dist/library-$VERSION.apk"
+          (cd dist && sha256sum "library-$VERSION.apk" > SHA256SUMS.txt)
+
+      - name: Publish versioned GitHub Release
+        if: steps.version.outputs.should_release == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.version.outputs.tag }}"
+          VERSION="${{ steps.version.outputs.version }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG appeared while this run was building; refusing to overwrite it." >&2
+            exit 1
+          fi
+          gh release create "$TAG" \
+            --title "Library $VERSION" \
+            --generate-notes \
+            --target "$GITHUB_SHA" \
+            "dist/library-$VERSION.apk" \
+            dist/SHA256SUMS.txt
+
+      - name: Dispatch catalog reconciliation for Library release
+        if: steps.version.outputs.should_release == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.version.outputs.tag }}"
+          RELEASE_ID="$(gh release view "$TAG" --json databaseId --jq .databaseId)"
+          test -n "$RELEASE_ID"
+          gh workflow run catalog.yml \
+            --ref main \
+            -f source_repository="$GITHUB_REPOSITORY" \
+            -f release_id="$RELEASE_ID" \
+            -f release_tag="$TAG" \
+            -f delivery_id="library-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "Dispatched catalog reconciliation for $TAG (release $RELEASE_ID)."
+
+      - name: Upload signed APK workflow artifact
+        if: steps.version.outputs.should_release == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: library-${{ steps.version.outputs.version }}
+          path: |
+            dist/library-${{ steps.version.outputs.version }}.apk
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+ \
               | sed 's/^v//' \
               | sort -V \
               | tail -n 1
@@ -88,8 +264,10 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v4
         if: steps.version.outputs.should_release == 'true'
+        with:
+          packages: ''
 
       - name: Install Android SDK
         if: steps.version.outputs.should_release == 'true'
