@@ -57,6 +57,7 @@ jobs:
       GITHUB_TOKEN: ${{ github.token }}
       GH_TOKEN: ${{ github.token }}
       LIBRARY_GITHUB_OWNER: ${{ github.repository_owner }}
+      PYTHONUNBUFFERED: '1'
     steps:
       - uses: actions/checkout@v5
 
@@ -87,15 +88,74 @@ jobs:
       - name: Install APK inspection tools
         run: sdkmanager "build-tools;36.0.0"
 
+      - name: Restore previous catalog snapshot
+        id: previous-catalog
+        shell: bash
+        run: |
+          set -euo pipefail
+          CACHE_DIR="$RUNNER_TEMP/library-catalog-previous"
+          rm -rf "$CACHE_DIR"
+          mkdir -p "$CACHE_DIR"
+
+          CATALOG_TAG="$(
+            gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq '[.[] | select(.draft == false) | select(.tag_name | startswith("catalog-"))][0].tag_name // ""'
+          )"
+          if [[ -z "$CATALOG_TAG" ]]; then
+            echo "No previous versioned catalog release found; APKs will be inspected normally."
+            exit 0
+          fi
+
+          gh release download "$CATALOG_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern catalog.json \
+            --dir "$CACHE_DIR"
+
+          echo "path=$CACHE_DIR/catalog.json" >> "$GITHUB_OUTPUT"
+          echo "tag=$CATALOG_TAG" >> "$GITHUB_OUTPUT"
+          echo "Restored previous catalog snapshot from $CATALOG_TAG"
+
       - name: Discover GitHub APK releases
         env:
           LIBRARY_GITHUB_TOKEN: ${{ steps.catalog-app.outputs.token }}
+          LIBRARY_PREVIOUS_CATALOG: ${{ steps.previous-catalog.outputs.path }}
         run: |
           python3 scripts/sync_github_installation.py
           python3 scripts/build_catalog.py
           python3 scripts/validate_catalog.py catalog/library.json
 
+      - name: Detect catalog changes
+        id: catalog-changes
+        shell: bash
+        env:
+          PREVIOUS_CATALOG: ${{ steps.previous-catalog.outputs.path }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${PREVIOUS_CATALOG:-}" || ! -f "$PREVIOUS_CATALOG" ]]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "No previous catalog snapshot to compare; publication is required."
+            exit 0
+          fi
+
+          python3 - "$PREVIOUS_CATALOG" catalog/library.json "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+
+          previous_path, current_path, output_path = sys.argv[1:]
+          with open(previous_path, encoding="utf-8") as handle:
+              previous = json.load(handle)
+          with open(current_path, encoding="utf-8") as handle:
+              current = json.load(handle)
+
+          keys = ("schemaVersion", "name", "apps")
+          changed = any(previous.get(key) != current.get(key) for key in keys)
+          with open(output_path, "a", encoding="utf-8") as handle:
+              handle.write(f"changed={'true' if changed else 'false'}\n")
+          print("Catalog content changed." if changed else "Catalog content is already current.")
+          PY
+
       - name: Publish versioned catalog release
+        if: ${{ steps.catalog-changes.outputs.changed == 'true' }}
         id: publish
         shell: bash
         run: |
@@ -126,6 +186,7 @@ jobs:
           echo "Published immutable catalog release $CATALOG_TAG"
 
       - name: Verify published catalog release
+        if: ${{ steps.catalog-changes.outputs.changed == 'true' }}
         shell: bash
         env:
           CATALOG_TAG: ${{ steps.publish.outputs.tag }}
@@ -143,6 +204,7 @@ jobs:
           echo "Verified $CATALOG_TAG contains the generated catalog.json"
 
       - name: Upload catalog workflow artifact
+        if: ${{ steps.catalog-changes.outputs.changed == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: library-catalog-${{ github.run_id }}-${{ github.run_attempt }}
@@ -155,17 +217,28 @@ jobs:
         shell: bash
         env:
           JOB_STATUS: ${{ job.status }}
+          CATALOG_CHANGED: ${{ steps.catalog-changes.outputs.changed }}
           CATALOG_TAG: ${{ steps.publish.outputs.tag }}
+          PREVIOUS_CATALOG_TAG: ${{ steps.previous-catalog.outputs.tag }}
         run: |
           set -euo pipefail
           STATE=failure
           DESCRIPTION="Catalog release failed"
           if [[ "$JOB_STATUS" == "success" ]]; then
             STATE=success
-            DESCRIPTION="Versioned catalog release published and verified"
+            if [[ "$CATALOG_CHANGED" == "true" ]]; then
+              DESCRIPTION="Versioned catalog release published and verified"
+            else
+              DESCRIPTION="Catalog already current"
+            fi
           elif [[ "$JOB_STATUS" == "cancelled" ]]; then
             STATE=error
             DESCRIPTION="Catalog release cancelled"
+          fi
+
+          STATUS_TAG="$CATALOG_TAG"
+          if [[ -z "$STATUS_TAG" && "$CATALOG_CHANGED" != "true" ]]; then
+            STATUS_TAG="$PREVIOUS_CATALOG_TAG"
           fi
 
           ARGS=(
@@ -175,7 +248,7 @@ jobs:
             -f "context=library/catalog-publish"
             -f "description=$DESCRIPTION"
           )
-          if [[ -n "$CATALOG_TAG" ]]; then
-            ARGS+=( -f "target_url=https://github.com/$GITHUB_REPOSITORY/releases/tag/$CATALOG_TAG" )
+          if [[ -n "$STATUS_TAG" ]]; then
+            ARGS+=( -f "target_url=https://github.com/$GITHUB_REPOSITORY/releases/tag/$STATUS_TAG" )
           fi
           gh api "${ARGS[@]}"
