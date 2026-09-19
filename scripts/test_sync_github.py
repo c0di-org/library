@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import urllib.error
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -182,6 +183,57 @@ class CatalogCacheTests(unittest.TestCase):
         self.assertEqual(fake.pages, [1, 2])
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["tag"], "v1")
+
+
+    def test_json_retries_transient_network_failure(self):
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return b'{"ok": true}'
+
+        gh = sync_github.GitHub(None)
+        with (
+            mock.patch.object(
+                sync_github.urllib.request,
+                "urlopen",
+                side_effect=[urllib.error.URLError("timed out"), Response()],
+            ) as urlopen,
+            mock.patch.object(sync_github.time, "sleep") as sleep,
+        ):
+            result = gh.json("https://api.github.com/example", authenticated=False)
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(urlopen.call_count, 2)
+        sleep.assert_called_once_with(1)
+
+    def test_json_does_not_retry_non_transient_http_error(self):
+        gh = sync_github.GitHub(None)
+        error = urllib.error.HTTPError(
+            "https://api.github.com/example",
+            404,
+            "Not Found",
+            {},
+            None,
+        )
+        with (
+            mock.patch.object(
+                sync_github.urllib.request,
+                "urlopen",
+                side_effect=error,
+            ) as urlopen,
+            mock.patch.object(sync_github.time, "sleep") as sleep,
+        ):
+            with self.assertRaises(urllib.error.HTTPError):
+                gh.json("https://api.github.com/example", authenticated=False)
+
+        self.assertEqual(urlopen.call_count, 1)
+        sleep.assert_not_called()
+
 
 
 if __name__ == "__main__":

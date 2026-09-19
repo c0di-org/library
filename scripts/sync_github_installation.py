@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Run catalog discovery with GitHub App installation-aware repository enumeration.
 
-`actions/create-github-app-token` returns an installation access token. The legacy
-catalog enumerator also probes `/user/repos`, which is a user-token endpoint. Keep
-its public-repository discovery, then merge in every repository exposed by the
-current app installation via `/installation/repositories`.
+`actions/create-github-app-token` returns an installation access token. Installation
+access tokens must enumerate private/selected repositories through
+`/installation/repositories`, not the user-token-only `/user/repos` endpoint.
+Public repositories are still discovered independently so public apps do not need
+to be selected in the GitHub App installation.
 """
 from __future__ import annotations
 
@@ -29,7 +30,10 @@ def installation_repositories(gh: sync_github.GitHub) -> list[dict]:
 
 
 def repos(gh: sync_github.GitHub, owner: str) -> list[dict]:
-    merged = {repo["full_name"]: repo for repo in ORIGINAL_REPOS(gh, owner)}
+    merged = {
+        repo["full_name"]: repo
+        for repo in sync_github.public_repositories(gh, owner)
+    }
     if not gh.token:
         return list(merged.values())
 
@@ -39,19 +43,33 @@ def repos(gh: sync_github.GitHub, owner: str) -> list[dict]:
         raise SystemExit(
             f"GitHub App installation repository enumeration failed: HTTP {exc.code}"
         ) from exc
+    except (urllib.error.URLError, TimeoutError) as exc:
+        reason = getattr(exc, "reason", exc)
+        raise SystemExit(
+            "GitHub App installation repository enumeration failed after retries: "
+            f"{reason}"
+        ) from exc
 
     owner_lower = owner.lower()
     for repo in installed:
         if repo.get("owner", {}).get("login", "").lower() == owner_lower:
             merged[repo["full_name"]] = repo
 
-    print(f"GitHub App installation exposes {len(installed)} repositories")
+    print(
+        f"GitHub App installation exposes {len(installed)} repositories",
+        flush=True,
+    )
     return list(merged.values())
 
 
-ORIGINAL_REPOS = sync_github.repos
-sync_github.repos = repos
+def main() -> None:
+    original_repos = sync_github.repos
+    sync_github.repos = repos
+    try:
+        sync_github.main()
+    finally:
+        sync_github.repos = original_repos
 
 
 if __name__ == "__main__":
-    sync_github.main()
+    main()

@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -34,6 +35,9 @@ MAX_ICON_BYTES = 256 * 1024
 DEFAULT_RELEASE_HISTORY_LIMIT = 10
 MAX_RELEASE_HISTORY_LIMIT = 50
 MAX_RELEASE_SCAN_PAGES = 10
+API_JSON_ATTEMPTS = 3
+API_JSON_TIMEOUT_SECONDS = 20
+RETRYABLE_HTTP_CODES = {429, 500, 502, 503, 504}
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -55,8 +59,31 @@ class GitHub:
         return urllib.request.Request(url, headers=headers)
 
     def json(self, url: str, authenticated: bool = True):
-        with urllib.request.urlopen(self.request(url, authenticated=authenticated), timeout=45) as response:
-            return json.loads(response.read())
+        for attempt in range(1, API_JSON_ATTEMPTS + 1):
+            try:
+                with urllib.request.urlopen(
+                    self.request(url, authenticated=authenticated),
+                    timeout=API_JSON_TIMEOUT_SECONDS,
+                ) as response:
+                    return json.loads(response.read())
+            except urllib.error.HTTPError as exc:
+                if exc.code not in RETRYABLE_HTTP_CODES or attempt == API_JSON_ATTEMPTS:
+                    raise
+                reason = f"HTTP {exc.code}"
+            except (urllib.error.URLError, TimeoutError) as exc:
+                if attempt == API_JSON_ATTEMPTS:
+                    raise
+                reason = str(getattr(exc, "reason", exc))
+
+            delay = attempt
+            print(
+                f"! GitHub API request failed ({reason}); retrying in {delay}s "
+                f"({attempt}/{API_JSON_ATTEMPTS})",
+                flush=True,
+            )
+            time.sleep(delay)
+
+        raise RuntimeError("unreachable GitHub API retry state")
 
     def _file_payload(self, repo: dict, path: str):
         url = f"{API}/repos/{repo['full_name']}/contents/{urllib.parse.quote(path, safe='/')}?ref={urllib.parse.quote(repo['default_branch'])}"
@@ -226,27 +253,36 @@ def _paged(gh: GitHub, url_for_page, authenticated: bool):
         page += 1
 
 
-def repos(gh: GitHub, owner: str):
+def public_repositories(gh: GitHub, owner: str):
     public_url = lambda page: (
         f"{API}/users/{urllib.parse.quote(owner)}/repos?per_page=100&page={page}&sort=updated"
     )
 
     try:
-        public = _paged(gh, public_url, authenticated=False)
+        return _paged(gh, public_url, authenticated=False)
     except urllib.error.HTTPError as exc:
         if exc.code != 403 or not gh.token:
             raise
-        print("! anonymous public repository enumeration rate-limited; retrying authenticated")
+        print(
+            "! anonymous public repository enumeration rate-limited; retrying authenticated",
+            flush=True,
+        )
         try:
-            public = _paged(gh, public_url, authenticated=True)
+            return _paged(gh, public_url, authenticated=True)
         except urllib.error.HTTPError as authenticated_exc:
             print(
                 "! public repository enumeration unavailable after authenticated retry: "
-                f"HTTP {authenticated_exc.code}; continuing with token-visible repositories"
+                f"HTTP {authenticated_exc.code}; continuing with token-visible repositories",
+                flush=True,
             )
-            public = []
+            return []
 
-    merged = {repo["full_name"]: repo for repo in public}
+
+def repos(gh: GitHub, owner: str):
+    merged = {
+        repo["full_name"]: repo
+        for repo in public_repositories(gh, owner)
+    }
 
     if gh.token:
         try:
