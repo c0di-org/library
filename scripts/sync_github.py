@@ -33,11 +33,16 @@ ICON_MIME_TYPES = {
 MAX_ICON_BYTES = 256 * 1024
 DEFAULT_RELEASE_HISTORY_LIMIT = 10
 MAX_RELEASE_HISTORY_LIMIT = 50
+MAX_RELEASE_SCAN_PAGES = 10
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class GitHub:
     def __init__(self, token: str | None):
         self.token = token.strip() if token else None
+        self.reused_releases = 0
+        self.downloaded_assets = 0
+        self.downloaded_bytes = 0
 
     def request(self, url: str, accept: str = "application/vnd.github+json", authenticated: bool = True):
         headers = {
@@ -82,6 +87,8 @@ class GitHub:
         request = self.request(asset["url"], "application/octet-stream", authenticated=authenticated)
         with urllib.request.urlopen(request, timeout=120) as response, path.open("wb") as output:
             shutil.copyfileobj(response, output, 1024 * 1024)
+        self.downloaded_assets += 1
+        self.downloaded_bytes += path.stat().st_size
 
 
 def tool(name: str) -> str:
@@ -307,11 +314,183 @@ def release_notes(body: str) -> list[str]:
     return notes
 
 
-def inspect_release(gh: GitHub, repo: dict, release: dict, aapt2: str, apksigner: str):
-    assets = [asset for asset in release.get("assets", []) if asset.get("name", "").lower().endswith(".apk")]
+def _normalized_sha256(value) -> str | None:
+    if not isinstance(value, str):
+        return None
+    value = value.strip().lower()
+    if value.startswith("sha256:"):
+        value = value.split(":", 1)[1]
+    return value if SHA256_RE.fullmatch(value) else None
+
+
+def _asset_sha256(asset: dict) -> str | None:
+    return _normalized_sha256(asset.get("digest"))
+
+
+def load_previous_catalog(path: Path | None) -> dict[tuple[str, str], dict]:
+    if path is None:
+        return {}
+    try:
+        root = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        print(f"! previous catalog cache unavailable: {exc}", flush=True)
+        return {}
+
+    cache: dict[tuple[str, str], dict] = {}
+    for app in root.get("apps", []):
+        repository = app.get("repository")
+        package_name = app.get("packageName")
+        if not isinstance(repository, str) or not repository or not package_name:
+            continue
+
+        current = app.get("release") if isinstance(app.get("release"), dict) else {}
+        current_tag = current.get("tag")
+        releases = app.get("releases")
+        if not isinstance(releases, list) or not releases:
+            fallback = dict(current)
+            if fallback:
+                fallback.setdefault(
+                    "signingCertSha256",
+                    app.get("provenance", {}).get("signingCertSha256"),
+                )
+                fallback.setdefault("changelog", app.get("changelog") or [])
+                releases = [fallback]
+            else:
+                releases = []
+
+        for release in releases:
+            if not isinstance(release, dict):
+                continue
+            tag = release.get("tag")
+            if not isinstance(tag, str) or not tag:
+                continue
+            item = dict(release)
+            item["packageName"] = package_name
+            item["_icon"] = app.get("icon") if tag == current_tag else None
+            cache[(repository.lower(), tag)] = item
+
+    print(
+        f"loaded {len(cache)} previously inspected release(s) from {path}",
+        flush=True,
+    )
+    return cache
+
+
+def cached_release_item(
+    repo: dict,
+    release: dict,
+    cache: dict[tuple[str, str], dict],
+):
+    tag = release.get("tag_name")
+    if not isinstance(tag, str) or not tag:
+        return None
+    cached = cache.get((repo["full_name"].lower(), tag))
+    if not cached:
+        return None
+
+    required = (
+        "versionName",
+        "versionCode",
+        "minSdk",
+        "targetSdk",
+        "signingCertSha256",
+        "packageName",
+    )
+    if any(cached.get(key) is None for key in required):
+        return None
+
+    assets = [
+        asset
+        for asset in release.get("assets", [])
+        if asset.get("name", "").lower().endswith(".apk")
+    ]
+    cached_artifacts = {
+        artifact.get("name"): artifact
+        for artifact in cached.get("artifacts", [])
+        if isinstance(artifact, dict) and artifact.get("name")
+    }
+    if not assets or len(assets) != len(cached_artifacts):
+        return None
+
+    private = bool(repo.get("private"))
+    artifacts = []
+    for asset in assets:
+        name = asset.get("name")
+        cached_artifact = cached_artifacts.get(name)
+        if not cached_artifact:
+            return None
+        reported_digest = _asset_sha256(asset)
+        cached_digest = _normalized_sha256(cached_artifact.get("sha256"))
+        if not reported_digest or reported_digest != cached_digest:
+            return None
+
+        reported_size = asset.get("size")
+        cached_size = cached_artifact.get("sizeBytes")
+        if reported_size is not None and cached_size is not None:
+            if int(reported_size) != int(cached_size):
+                return None
+
+        artifacts.append(
+            {
+                "name": name,
+                "downloadUrl": asset.get("browser_download_url") if not private else None,
+                "apiUrl": asset.get("url"),
+                "sha256": reported_digest,
+                "sizeBytes": int(reported_size if reported_size is not None else cached_size),
+                "abis": list(cached_artifact.get("abis") or []),
+                "authRequired": private,
+            }
+        )
+
+    changelog = release_notes(release.get("body") or "")
+    changelog = changelog or [f"Release {tag}"]
+    return {
+        "tag": tag,
+        "versionName": cached["versionName"],
+        "versionCode": int(cached["versionCode"]),
+        "minSdk": int(cached["minSdk"]),
+        "targetSdk": int(cached["targetSdk"]),
+        "publishedAt": release.get("published_at"),
+        "releaseUrl": release.get("html_url"),
+        "signingCertSha256": cached["signingCertSha256"],
+        "artifacts": artifacts,
+        "changelog": changelog,
+        "packageName": cached["packageName"],
+        "icon": cached.get("_icon"),
+    }
+
+
+def inspect_release(
+    gh: GitHub,
+    repo: dict,
+    release: dict,
+    aapt2: str,
+    apksigner: str,
+    cache: dict[tuple[str, str], dict] | None = None,
+):
+    assets = [
+        asset
+        for asset in release.get("assets", [])
+        if asset.get("name", "").lower().endswith(".apk")
+    ]
     if not assets:
         raise ValueError("no APK assets")
 
+    cached = cached_release_item(repo, release, cache or {})
+    if cached is not None:
+        gh.reused_releases += 1
+        print(
+            f"= reuse {repo['full_name']}:{release.get('tag_name', '')} "
+            f"({len(assets)} unchanged APK asset(s))",
+            flush=True,
+        )
+        return cached
+
+    print(
+        f"> inspect {repo['full_name']}:{release.get('tag_name', '')} "
+        f"({len(assets)} APK asset(s))",
+        flush=True,
+    )
     inspected = []
     with tempfile.TemporaryDirectory(prefix="library-") as temp:
         for asset in assets:
@@ -319,10 +498,17 @@ def inspect_release(gh: GitHub, repo: dict, release: dict, aapt2: str, apksigner
             gh.download(repo, asset, path)
             try:
                 info = inspect(path, aapt2, apksigner)
+                digest = sha256(path)
+                reported_digest = _asset_sha256(asset)
+                if reported_digest and digest != reported_digest:
+                    raise ValueError("downloaded bytes disagree with GitHub asset digest")
             except ValueError as exc:
-                print(f"skip asset {repo['full_name']}:{asset['name']}: {exc}")
+                print(
+                    f"skip asset {repo['full_name']}:{asset['name']}: {exc}",
+                    flush=True,
+                )
                 continue
-            inspected.append((asset, info, sha256(path), path.stat().st_size))
+            inspected.append((asset, info, digest, path.stat().st_size))
 
     if not inspected:
         raise ValueError("no standalone APK assets")
@@ -372,42 +558,85 @@ def release_history_limit(meta: dict) -> int:
     return max(1, min(value, MAX_RELEASE_HISTORY_LIMIT))
 
 
-def discover_releases(gh: GitHub, repo: dict, meta: dict, aapt2: str, apksigner: str):
+def discover_releases(
+    gh: GitHub,
+    repo: dict,
+    meta: dict,
+    aapt2: str,
+    apksigner: str,
+    cache: dict[tuple[str, str], dict] | None = None,
+):
     limit = release_history_limit(meta)
     include_prereleases = bool(meta.get("includePrereleases", False))
-    fetch_count = min(100, max(20, limit * 3))
-    releases = [
-        release
-        for release in gh.release_json(repo, f"{API}/repos/{repo['full_name']}/releases?per_page={fetch_count}")
-        if not release.get("draft") and (include_prereleases or not release.get("prerelease"))
-    ]
 
     resolved = []
     seen_versions = set()
     expected_package = None
-    for release in releases:
-        if len(resolved) >= limit:
+    page = 1
+    while len(resolved) < limit and page <= MAX_RELEASE_SCAN_PAGES:
+        batch = gh.release_json(
+            repo,
+            f"{API}/repos/{repo['full_name']}/releases?per_page=100&page={page}",
+        )
+        if not batch:
             break
-        if not any(asset.get("name", "").lower().endswith(".apk") for asset in release.get("assets", [])):
-            continue
-        try:
-            item = inspect_release(gh, repo, release, aapt2, apksigner)
-        except ValueError as exc:
-            print(f"skip release {repo['full_name']}:{release.get('tag_name', '')}: {exc}")
-            continue
-        if expected_package is None:
-            expected_package = item["packageName"]
-        elif item["packageName"] != expected_package:
-            print(
-                f"skip release {repo['full_name']}:{release.get('tag_name', '')}: "
-                f"package changed from {expected_package} to {item['packageName']}"
-            )
-            continue
-        version_key = (item["versionCode"], item.get("tag"))
-        if version_key in seen_versions:
-            continue
-        seen_versions.add(version_key)
-        resolved.append(item)
+
+        for release in batch:
+            if release.get("draft") or (release.get("prerelease") and not include_prereleases):
+                continue
+            if not any(
+                asset.get("name", "").lower().endswith(".apk")
+                for asset in release.get("assets", [])
+            ):
+                continue
+            try:
+                item = inspect_release(
+                    gh,
+                    repo,
+                    release,
+                    aapt2,
+                    apksigner,
+                    cache=cache,
+                )
+            except ValueError as exc:
+                print(
+                    f"skip release {repo['full_name']}:{release.get('tag_name', '')}: {exc}",
+                    flush=True,
+                )
+                continue
+            if expected_package is None:
+                expected_package = item["packageName"]
+            elif item["packageName"] != expected_package:
+                print(
+                    f"skip release {repo['full_name']}:{release.get('tag_name', '')}: "
+                    f"package changed from {expected_package} to {item['packageName']}",
+                    flush=True,
+                )
+                continue
+            version_key = (item["versionCode"], item.get("tag"))
+            if version_key in seen_versions:
+                continue
+            seen_versions.add(version_key)
+            resolved.append(item)
+            if len(resolved) >= limit:
+                break
+
+        if len(batch) < 100:
+            break
+        page += 1
+
+    if page > 1:
+        print(
+            f"scanned {min(page, MAX_RELEASE_SCAN_PAGES)} release page(s) for "
+            f"{repo['full_name']}",
+            flush=True,
+        )
+    if page > MAX_RELEASE_SCAN_PAGES and len(resolved) < limit:
+        print(
+            f"! stopped release scan for {repo['full_name']} after "
+            f"{MAX_RELEASE_SCAN_PAGES * 100} releases",
+            flush=True,
+        )
     return resolved
 
 
@@ -478,9 +707,16 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--owner", default=os.environ.get("LIBRARY_GITHUB_OWNER", "garfbargle"))
     parser.add_argument("--token", default=os.environ.get("LIBRARY_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN"))
+    previous_catalog = os.environ.get("LIBRARY_PREVIOUS_CATALOG")
+    parser.add_argument(
+        "--previous-catalog",
+        type=Path,
+        default=Path(previous_catalog) if previous_catalog else None,
+    )
     args = parser.parse_args()
 
     gh = GitHub(args.token)
+    cache = load_previous_catalog(args.previous_catalog)
     aapt2, apksigner = tool("aapt2"), tool("apksigner")
     if OUT.exists():
         shutil.rmtree(OUT)
@@ -494,7 +730,14 @@ def main():
         try:
             meta = metadata(gh, repo)
             icon_override = metadata_icon(gh, repo, meta)
-            release_items = discover_releases(gh, repo, meta, aapt2, apksigner)
+            release_items = discover_releases(
+                gh,
+                repo,
+                meta,
+                aapt2,
+                apksigner,
+                cache=cache,
+            )
             if not release_items:
                 continue
             manifest = build(repo, release_items, meta, icon_override)
@@ -523,7 +766,13 @@ def main():
         details = "; ".join(api_failures)
         raise SystemExit(f"GitHub API failures encountered; refusing to publish a partial catalog: {details}")
 
-    print(f"discovered {count} installable Android repositories")
+    mib = gh.downloaded_bytes / (1024 * 1024)
+    print(
+        f"discovered {count} installable Android repositories; "
+        f"reused {gh.reused_releases} unchanged release(s); "
+        f"downloaded {gh.downloaded_assets} APK asset(s) / {mib:.1f} MiB",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":
