@@ -100,19 +100,31 @@ jobs:
           rm -rf "$CACHE_DIR"
           mkdir -p "$CACHE_DIR"
 
-          CATALOG_TAG="$(
+          if ! CATALOG_TAG="$(
             gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
               --jq '[.[] | select(.draft == false) | select(.tag_name | startswith("catalog-"))][0].tag_name // ""'
-          )"
+          )"; then
+            echo "::warning::Could not query the previous catalog release; falling back to full inspection."
+            exit 0
+          fi
           if [[ -z "$CATALOG_TAG" ]]; then
             echo "No previous versioned catalog release found; APKs will be inspected normally."
             exit 0
           fi
 
-          gh release download "$CATALOG_TAG" \
+          if ! gh release download "$CATALOG_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --pattern catalog.json \
-            --dir "$CACHE_DIR"
+            --dir "$CACHE_DIR"; then
+            echo "::warning::Could not restore $CATALOG_TAG; falling back to full inspection."
+            exit 0
+          fi
+
+          if ! python3 -m json.tool "$CACHE_DIR/catalog.json" >/dev/null; then
+            echo "::warning::$CATALOG_TAG contains an invalid catalog.json; falling back to full inspection."
+            rm -f "$CACHE_DIR/catalog.json"
+            exit 0
+          fi
 
           echo "path=$CACHE_DIR/catalog.json" >> "$GITHUB_OUTPUT"
           echo "tag=$CATALOG_TAG" >> "$GITHUB_OUTPUT"
